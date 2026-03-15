@@ -3,6 +3,7 @@ const SETTINGS_KEY = 'voltchat_settings'
 const defaultSettings = {
   notifications: true,
   pushNotifications: false,
+  mentionNotifications: true,
   sounds: true,
   messageNotifications: true,
   friendRequests: true,
@@ -10,6 +11,7 @@ const defaultSettings = {
   inputVolume: 100,
   muteAll: false,
   dmPermissions: 'everyone',
+  nsfwImageFilter: true,
   inputDevice: 'default',
   outputDevice: 'default',
   videoDevice: 'default',
@@ -19,6 +21,7 @@ const defaultSettings = {
   serverMutes: {},
   soundpack: 'default',
   soundpackVolume: 100,
+  discordRichPresence: false,
   // Voice state persistence
   voiceMuted: false,
   voiceDeafened: false,

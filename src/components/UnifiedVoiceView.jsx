@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useRef } from 'react'
-import { Mic, MicOff, Volume2, VolumeX, Video, VideoOff, Monitor, MonitorOff, Settings, Wifi, WifiOff, PhoneOff, Users, Maximize2, X } from 'lucide-react'
+import { MicrophoneIcon, SpeakerWaveIcon, SpeakerXMarkIcon, VideoCameraIcon, VideoCameraSlashIcon, ComputerDesktopIcon, Cog6ToothIcon, WifiIcon, PhoneXMarkIcon, UsersIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { Mic, Volume2, VolumeX, Video, VideoOff, Monitor, Settings, Wifi, PhoneOff, Users, Maximize2, X } from 'lucide-react'
 import Avatar from './Avatar'
 import { useAuth } from '../contexts/AuthContext'
 import '../assets/styles/VoiceChannel.css'
@@ -36,13 +37,13 @@ const UnifiedVoiceView = ({
     if (!isActive) return { text: 'Click to join', color: 'var(--volt-text-muted)', icon: null, class: 'disconnected' }
     switch (connectionState) {
       case 'connecting':
-        return { text: 'Connecting...', color: '#f59e0b', icon: <Wifi size={14} className="pulse" />, class: 'connecting' }
+        return { text: 'Connecting...', color: 'var(--volt-warning)', icon: <WifiIcon size={14} className="pulse" />, class: 'connecting' }
       case 'connected':
-        return { text: 'Connected', color: '#22c55e', icon: <Wifi size={14} />, class: 'connected' }
+        return { text: 'Connected', color: 'var(--volt-success)', icon: <WifiIcon size={14} />, class: 'connected' }
       case 'failed':
-        return { text: 'Connection failed', color: '#ef4444', icon: <WifiOff size={14} />, class: 'failed' }
+        return { text: 'Connection failed', color: 'var(--volt-danger)', icon: <WifiIcon size={14} />, class: 'failed' }
       default:
-        return { text: 'Disconnected', color: 'var(--volt-text-muted)', icon: <WifiOff size={14} />, class: 'disconnected' }
+        return { text: 'Disconnected', color: 'var(--volt-text-muted)', icon: <WifiIcon size={14} />, class: 'disconnected' }
     }
   }
 
@@ -79,19 +80,19 @@ const UnifiedVoiceView = ({
         </div>
         <div className="vc-mini-controls">
           <button className={`vc-mini-btn ${isMuted ? 'active' : ''}`} onClick={onToggleMute}>
-            {isMuted ? <MicOff size={16} /> : <Mic size={16} />}
+            {isMuted ? <MicrophoneIcon size={16} /> : <MicrophoneIcon size={16} />}
           </button>
           <button className={`vc-mini-btn ${isDeafened ? 'active danger' : ''}`} onClick={onToggleDeafen}>
-            {isDeafened ? <VolumeX size={16} /> : <Volume2 size={16} />}
+            {isDeafened ? <SpeakerXMarkIcon size={16} /> : <Volume2 size={16} />}
           </button>
           <button className={`vc-mini-btn ${isVideoOn ? 'active' : ''}`} onClick={onToggleVideo}>
-            {isVideoOn ? <Video size={16} /> : <VideoOff size={16} />}
+            {isVideoOn ? <VideoCameraIcon size={16} /> : <VideoCameraSlashIcon size={16} />}
           </button>
           <button className={`vc-mini-btn ${isScreenSharing ? 'active' : ''}`} onClick={onToggleScreenShare}>
-            {isScreenSharing ? <Monitor size={16} /> : <MonitorOff size={16} />}
+            {isScreenSharing ? <ComputerDesktopIcon size={16} /> : <ComputerDesktopIcon size={16} />}
           </button>
           <button className="vc-mini-btn danger" onClick={onLeave}>
-            <PhoneOff size={16} />
+            <PhoneXMarkIcon size={16} />
           </button>
         </div>
       </div>
@@ -113,7 +114,7 @@ const UnifiedVoiceView = ({
       <div className={`unified-voice-content`}>
         {participants.length === 0 ? (
           <div className="unified-voice-empty">
-            <Users size={48} style={{ opacity: 0.3 }} />
+            <UsersIcon size={48} style={{ opacity: 0.3 }} />
             <p>No one is here yet</p>
           </div>
         ) : (
@@ -127,7 +128,7 @@ const UnifiedVoiceView = ({
               return (
                 <div
                   key={p.id}
-                  className={`voice-participant-tile ${p.speaking ? 'speaking' : ''} ${p.muted ? 'muted' : ''}`}
+                  className={`voice-participant-tile ${p.speaking ? 'speaking' : ''} ${p.muted ? 'muted' : ''} ${p.isReconnecting ? 'reconnecting' : ''}`}
                   onContextMenu={(e) => handleParticipantContextMenu(e, p)}
                 >
                   {hasScreen ? (
@@ -140,7 +141,7 @@ const UnifiedVoiceView = ({
                         ref={el => { if (el) el.srcObject = p.screenStream }}
                       />
                       <div className="voice-screen-badge">
-                        <Monitor size={12} />
+                        <ComputerDesktopIcon size={12} />
                         <span>Screen</span>
                       </div>
                     </div>
@@ -157,7 +158,7 @@ const UnifiedVoiceView = ({
                         className="vc-tile-expand"
                         onClick={() => setExpandedVideo({ userId: p.id, stream: p.videoStream, label: p.username })}
                       >
-                        <Maximize2 size={14} />
+                        <ArrowsPointingOutIcon size={14} />
                       </button>
                     </div>
                   ) : (
@@ -165,19 +166,19 @@ const UnifiedVoiceView = ({
                       <Avatar
                         src={p.avatar}
                         fallback={p.username}
-                        size={80}
-                        className="voice-tile-avatar"
+                        size={28}
+                        userId={p.id}
                       />
                       {(p.muted || p.deafened) && (
                         <div className="voice-tile-status-indicators">
                           {p.deafened && (
                             <span className="voice-tile-status-icon deafened">
-                              <VolumeX size={12} />
+                              <SpeakerXMarkIcon size={12} />
                             </span>
                           )}
                           {p.muted && !p.deafened && (
                             <span className="voice-tile-status-icon">
-                              <MicOff size={12} />
+                              <MicrophoneIcon size={12} />
                             </span>
                           )}
                         </div>
@@ -193,12 +194,12 @@ const UnifiedVoiceView = ({
                     <div className="voice-tile-badges">
                       {hasScreen && (
                         <span className="voice-tile-badge screen-on">
-                          <Monitor size={12} />
+                          <ComputerDesktopIcon size={12} />
                         </span>
                       )}
                       {hasVideo && (
                         <span className="voice-tile-badge video-on">
-                          <Video size={12} />
+                          <VideoCameraIcon size={12} />
                         </span>
                       )}
                     </div>
@@ -219,7 +220,7 @@ const UnifiedVoiceView = ({
               onClick={onToggleMute}
               title={isMuted ? 'Unmute' : 'Mute'}
             >
-              {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+              {isMuted ? <MicrophoneIcon size={20} /> : <MicrophoneIcon size={20} />}
               <span>{isMuted ? 'Unmute' : 'Mute'}</span>
             </button>
             <button
@@ -227,7 +228,7 @@ const UnifiedVoiceView = ({
               onClick={onToggleDeafen}
               title={isDeafened ? 'Undeafen' : 'Deafen'}
             >
-              {isDeafened ? <VolumeX size={20} /> : <Volume2 size={20} />}
+              {isDeafened ? <SpeakerXMarkIcon size={20} /> : <Volume2 size={20} />}
               <span>{isDeafened ? 'Undeafen' : 'Deafen'}</span>
             </button>
           </div>
@@ -238,7 +239,7 @@ const UnifiedVoiceView = ({
               onClick={onToggleVideo}
               title={isVideoOn ? 'Stop Video' : 'Start Video'}
             >
-              {isVideoOn ? <VideoOff size={20} /> : <Video size={20} />}
+              {isVideoOn ? <VideoCameraSlashIcon size={20} /> : <VideoCameraIcon size={20} />}
               <span>{isVideoOn ? 'Stop Video' : 'Video'}</span>
             </button>
             <button
@@ -246,7 +247,7 @@ const UnifiedVoiceView = ({
               onClick={onToggleScreenShare}
               title={isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
             >
-              {isScreenSharing ? <MonitorOff size={20} /> : <Monitor size={20} />}
+              {isScreenSharing ? <ComputerDesktopIcon size={20} /> : <ComputerDesktopIcon size={20} />}
               <span>{isScreenSharing ? 'Stop Share' : 'Screen'}</span>
             </button>
           </div>
@@ -257,7 +258,7 @@ const UnifiedVoiceView = ({
               onClick={onShowConnectionInfo}
               title="Connection Info"
             >
-              <Wifi size={20} />
+              <WifiIcon size={20} />
               <span>Connection</span>
             </button>
             <button
@@ -265,7 +266,7 @@ const UnifiedVoiceView = ({
               onClick={onOpenSettings}
               title="Settings"
             >
-              <Settings size={20} />
+              <CogIcon size={20} />
               <span>Settings</span>
             </button>
             <button
@@ -273,7 +274,7 @@ const UnifiedVoiceView = ({
               onClick={onLeave}
               title="Leave Voice"
             >
-              <PhoneOff size={20} />
+              <PhoneXMarkIcon size={20} />
               <span>Leave</span>
             </button>
           </div>
@@ -301,7 +302,7 @@ const UnifiedVoiceView = ({
                 handleCloseMenu()
               }}
             >
-              {participantMenu.isMuted ? <Volume2 size={14} /> : <VolumeX size={14} />}
+              {participantMenu.isMuted ? <Volume2 size={14} /> : <SpeakerXMarkIcon size={14} />}
               {participantMenu.isMuted ? 'Unmute for me' : 'Mute for me'}
             </button>
             <div className="vpm-volume">
@@ -335,7 +336,7 @@ const UnifiedVoiceView = ({
         <div className="vc-fullscreen-overlay" onClick={() => setExpandedVideo(null)}>
           <div className="vc-fullscreen-inner" onClick={e => e.stopPropagation()}>
             <button className="vc-fullscreen-close" onClick={() => setExpandedVideo(null)}>
-              <X size={20} />
+              <XMarkIcon size={20} />
             </button>
             <video
               autoPlay

@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { X, Folder } from 'lucide-react'
+import { XMarkIcon, FolderIcon } from '@heroicons/react/24/outline'
 import { apiService } from '../../services/apiService'
 import { useTranslation } from '../../hooks/useTranslation'
 import './Modal.css'
@@ -39,7 +39,7 @@ const CreateCategoryModal = ({ serverId, onClose, onSuccess }) => {
         <div className="modal-header">
           <h2>{t('modals.createCategory')}</h2>
           <button className="modal-close" onClick={onClose}>
-            <X size={24} />
+            <XMarkIcon size={24} />
           </button>
         </div>
 
@@ -48,7 +48,7 @@ const CreateCategoryModal = ({ serverId, onClose, onSuccess }) => {
             <div className="form-group">
               <label>{t('modals.categoryName')}</label>
               <div className="category-name-input">
-                <Folder size={18} />
+                <FolderIcon size={18} />
                 <input
                   type="text"
                   className="input"

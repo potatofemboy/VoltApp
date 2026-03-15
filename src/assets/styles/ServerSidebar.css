@@ -45,8 +45,8 @@
 }
 
 .server-icon {
-  width: 48px;
-  height: 48px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: var(--volt-bg-tertiary);
   display: flex;
@@ -58,7 +58,7 @@
   overflow: hidden;
   color: var(--volt-text-primary);
   font-weight: 600;
-  font-size: 14px;
+  font-size: 30px;
   border: 2px solid transparent;
 }
 
@@ -81,6 +81,16 @@
   color: white;
   transform: scale(1.05);
   box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+}
+
+.server-icon.has-events {
+  border-color: rgba(255, 193, 94, 0.58);
+  box-shadow: 0 0 0 1px rgba(255, 193, 94, 0.18);
+}
+
+.server-icon.has-events-today {
+  background: linear-gradient(180deg, rgba(255, 193, 94, 0.2), var(--volt-bg-tertiary));
+  border-color: rgba(255, 193, 94, 0.82);
 }
 
 .server-icon.active::before {
@@ -113,12 +123,12 @@
 }
 
 .admin-icon {
-  background: linear-gradient(135deg, #faa81a 0%, #f59e0b 100%);
+  background: linear-gradient(135deg, #faa81a 0%, var(--volt-warning) 100%);
   color: white;
 }
 
 .admin-icon:hover {
-  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  background: linear-gradient(135deg, var(--volt-warning) 0%, #d97706 100%);
   border-radius: 16px;
 }
 
@@ -147,7 +157,7 @@
 }
 
 .friends-icon {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  background: linear-gradient(135deg, var(--volt-success) 0%, #059669 100%);
   color: white;
   position: relative;
 }
@@ -158,14 +168,14 @@
 
 .friends-notification-badge {
   position: absolute;
-  bottom: -4px;
+  bottom: -6px;
   right: -6px;
-  background: #ef4444;
+  background: var(--volt-danger);
   color: white;
-  border-radius: 12px;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
+  border-radius: 999px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
   font-size: 11px;
   font-weight: 600;
   display: flex;
@@ -173,36 +183,112 @@
   justify-content: center;
   border: 2px solid var(--volt-bg-primary);
   z-index: 10;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
-.friends-notification-badge .notification-avatar {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 2px solid var(--volt-bg-primary);
+.server-dm-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  padding: 2px 0 6px;
+}
+
+.server-dm-icon,
+.server-dm-more {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--volt-bg-tertiary) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--volt-border) 78%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+  overflow: visible;
+  color: var(--volt-text-primary);
+}
+
+.server-dm-icon:hover,
+.server-dm-more:hover,
+.server-dm-icon.active,
+.server-dm-more.active {
+  transform: translateY(-1px) scale(1.04);
+  border-color: color-mix(in srgb, var(--volt-primary) 72%, white);
+  background: color-mix(in srgb, var(--volt-primary) 22%, var(--volt-bg-tertiary));
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.22);
+}
+
+.server-dm-icon img,
+.server-dm-icon .avatar,
+.server-dm-icon .avatar-image,
+.server-dm-icon .avatar-fallback {
+  width: 100%;
+  height: 100%;
+  border-radius: 11px;
+}
+
+.server-dm-acronym,
+.server-dm-more {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.server-dm-status {
   position: absolute;
-}
-
-.friends-notification-badge .notification-avatar:first-child {
-  right: 2px;
-  z-index: 3;
-}
-
-.friends-notification-badge .notification-avatar:nth-child(2) {
-  right: 8px;
+  right: -2px;
+  bottom: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 2px solid var(--volt-bg-primary);
+  background: var(--volt-text-muted);
   z-index: 2;
 }
 
-.friends-notification-badge .notification-avatar:nth-child(3) {
-  right: 14px;
-  z-index: 1;
+.server-dm-status.online {
+  background: var(--volt-success);
+}
+
+.server-dm-status.idle {
+  background: var(--volt-warning);
+}
+
+.server-dm-status.dnd {
+  background: var(--volt-danger);
+}
+
+.server-dm-badge {
+  position: absolute;
+  top: -6px;
+  right: -8px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--volt-danger);
+  color: #fff;
+  border: 2px solid var(--volt-bg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  z-index: 3;
 }
 
 .server-icon .server-unread-badge {
   position: absolute;
   bottom: -4px;
   right: -4px;
-  background: #ef4444;
+  background: var(--volt-danger);
   color: white;
   border-radius: 8px;
   min-width: 16px;
@@ -214,6 +300,29 @@
   align-items: center;
   justify-content: center;
   border: 2px solid var(--volt-bg-primary);
+}
+
+.server-event-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--volt-bg-primary);
+  color: #181818;
+  z-index: 3;
+}
+
+.server-event-badge.upcoming {
+  background: #ffd55e;
+}
+
+.server-event-badge.today {
+  background: #ff8f47;
 }
 
 .settings-icon {

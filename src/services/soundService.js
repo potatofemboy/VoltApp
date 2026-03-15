@@ -49,6 +49,127 @@ class SoundService {
     this._soundsEnabled = null
     this._soundsEnabledCacheTime = 0
     this._SOUNDS_CACHE_TTL = 100 // Cache for 100ms to avoid thrashing
+    this._soundpackVersion = 'royalty-v1'
+  }
+
+  getAvailableSoundpacks() {
+    return [
+      'default',
+      'classic',
+      'kenney_interface',
+      'button_hitech',
+      'owlish',
+      'ui51',
+      'digital63',
+      'retro512',
+      'rpg50',
+      'kenney_interface_alt1',
+      'kenney_interface_alt2',
+      'button_hitech_alt',
+      'owlish_ui',
+      'owlish_scifi',
+      'ui51_alt',
+      'digital63_alt',
+      'retro512_alt1',
+      'retro512_alt2',
+      'rpg50_alt'
+    ]
+  }
+
+  getPreviewSoundKeys(pack = this.soundpack) {
+    const targetPack = pack || this.soundpack
+    if (this._isRuntimeGeneratedSoundpack(targetPack)) {
+      return this._getSoundKeys()
+    }
+
+    const sounds = this._getSoundpackSounds(targetPack)
+    return this._getSoundKeys().filter((key) => Boolean(sounds[key]))
+  }
+
+  _isRuntimeGeneratedSoundpack(pack) {
+    return pack === 'default'
+  }
+
+  _getCurrentGeneratedProfile() {
+    return { wave: 'sine', freqScale: 1, gainScale: 1, durationScale: 1, attackScale: 1, detuneCents: 5 }
+  }
+
+  _getSoundKeys() {
+    return [
+      'ringtone',
+      'messageReceived',
+      'dmReceived',
+      'mention',
+      'dmMention',
+      'callJoin',
+      'callConnected',
+      'callLeft',
+      'callEnded',
+      'callDeclined',
+      'userJoined',
+      'userLeft',
+      'mute',
+      'unmute',
+      'deafen',
+      'undeafen',
+      'screenShareStart',
+      'screenShareStop',
+      'cameraOn',
+      'cameraOff',
+      'voiceKick',
+      'serverJoined',
+      'roleAdded',
+      'roleRemoved',
+      'notification',
+      'error',
+      'success',
+      'typing',
+      'welcome',
+      'logout',
+      'victory',
+      'defeat',
+      'draw',
+      'gameStart',
+      'gameEnd',
+      'playerJoin',
+      'playerLeave',
+      'yourTurn',
+      'countdown',
+      'timerStart',
+      'timerEnd',
+      'moveValid',
+      'moveInvalid',
+      'turnSwitch',
+      'combo',
+      'streak',
+      'powerUp',
+      'damage',
+      'heal',
+      'levelUp',
+      'achievementUnlock',
+      'buttonClick',
+      'menuOpen',
+      'menuClose',
+      'popupOpen',
+      'popupClose',
+      'spectatorJoin',
+      'spectatorLeave',
+      'hostTransfer',
+      'playerReady',
+      'playerNotReady',
+      'roundWin',
+      'roundLoss',
+      'suddenDeath',
+      'overtime',
+      'intermission',
+      'pause',
+      'resume',
+      'selectionChange',
+      'coinCollect',
+      'xpGain',
+      'winner',
+      'loser'
+    ]
   }
   
   // Check if sounds are enabled in settings (notification sounds toggle)
@@ -74,6 +195,12 @@ class SoundService {
   }
 
   setSoundpack(pack) {
+    const validPacks = this.getAvailableSoundpacks()
+    if (!validPacks.includes(pack)) {
+      pack = 'default'
+    }
+    console.log('[Sound] Setting soundpack to:', pack)
+    this._stopAllSoundpackAudio()
     this.soundpack = pack
     this._preloadSounds(pack)
   }
@@ -91,83 +218,129 @@ class SoundService {
   }
 
   _preloadSounds(pack) {
-    if (pack === 'default') return
-    
+    if (this._isRuntimeGeneratedSoundpack(pack)) return
+
     const sounds = this._getSoundpackSounds(pack)
     Object.entries(sounds).forEach(([key, filename]) => {
-      if (!this._audioElements[key]) {
-        const audio = new Audio(`/sounds/classic/${filename}`)
+      const cacheKey = `${pack}:${key}`
+      if (!this._audioElements[cacheKey]) {
+        const audio = new Audio(filename)
         audio.preload = 'auto'
-        this._audioElements[key] = audio
+        this._audioElements[cacheKey] = audio
       }
     })
   }
 
   _getSoundpackSounds(pack) {
-    const packs = {
-      classic: {
+    if (pack === 'classic') {
+      const raw = {
         ringtone: 'ring.mp3',
+        messageReceived: 'noti7.mp3',
+        dmReceived: 'message.mp3',
+        mention: 'noti6.mp3',
+        dmMention: 'noti6.mp3',
         callJoin: 'noti4.mp3',
         callConnected: 'connecting_call.mp3',
+        callLeft: 'declined_call.mp3',
+        callEnded: 'declined_call.mp3',
+        callDeclined: 'declined_call.mp3',
         userJoined: 'connecting_call.mp3',
         userLeft: 'declined_call.mp3',
-        mention: 'noti6.mp3',
-        messageReceived: 'noti7.mp3',
-        welcome: 'welcome.mp3',
-        logout: 'logout.mp3',
+        mute: 'denied1.mp3',
+        unmute: 'noti4.mp3',
+        deafen: 'denied1.mp3',
+        undeafen: 'noti4.mp3',
+        screenShareStart: 'denied2.mp3',
         screenShareStop: 'denied1.mp3',
-        screenShareStart: 'denied2.mp3'
+        cameraOn: 'noti4.mp3',
+        cameraOff: 'denied1.mp3',
+        voiceKick: 'denied1.mp3',
+        serverJoined: 'welcome.mp3',
+        roleAdded: 'noti4.mp3',
+        roleRemoved: 'denied1.mp3',
+        notification: 'noti7.mp3',
+        error: 'denied1.mp3',
+        success: 'noti4.mp3',
+        typing: 'message.mp3',
+        welcome: 'welcome.mp3',
+        logout: 'logout.mp3'
       }
+      return Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, `/sounds/classic/${v}`]))
     }
-    return packs[pack] || {}
+
+    const royaltyPacks = {
+      kenney_interface: 'ogg',
+      button_hitech: 'wav',
+      owlish: 'wav',
+      ui51: 'wav',
+      digital63: 'mp3',
+      retro512: 'wav',
+      rpg50: 'ogg',
+      kenney_interface_alt1: 'ogg',
+      kenney_interface_alt2: 'ogg',
+      button_hitech_alt: 'wav',
+      owlish_ui: 'wav',
+      owlish_scifi: 'wav',
+      ui51_alt: 'wav',
+      digital63_alt: 'mp3',
+      retro512_alt1: 'wav',
+      retro512_alt2: 'wav',
+      rpg50_alt: 'ogg'
+    }
+
+    const ext = royaltyPacks[pack]
+    if (!ext) return {}
+
+    return this._getSoundKeys().reduce((acc, key) => {
+      acc[key] = `/sounds/royalty/${pack}/${key}.${ext}?v=${this._soundpackVersion}`
+      return acc
+    }, {})
   }
 
   _tryPlaySoundpack(soundKey) {
     // Check if sounds are enabled in settings
     if (!this._areSoundsEnabled()) return true // Return true to prevent fallback
     
-    if (this.soundpack === 'default') return false
-    
-    const sounds = this._getSoundpackSounds(this.soundpack)
-    const filename = sounds[soundKey]
-    
-    if (!filename) return false
-
-    let audio = this._audioElements[soundKey]
-    if (!audio) {
-      audio = new Audio(`/sounds/classic/${filename}`)
-      audio.preload = 'auto'
-      this._audioElements[soundKey] = audio
+    if (this._isRuntimeGeneratedSoundpack(this.soundpack)) {
+      return false
     }
 
-    if (audio) {
-      audio.volume = this.soundpackVolume * this.volume
-      audio.currentTime = 0
-      audio.play().catch(() => {})
-      return true
-    }
-    return false
+    return this._playSoundpackSound(soundKey, {
+      fallback: () => this._playGeneratedSoundByKey(soundKey)
+    })
   }
 
-  _playSoundpackSound(soundKey) {
-    if (this.soundpack === 'default') return false
-    
+  _playSoundpackSound(soundKey, opts = {}) {
+    if (this._isRuntimeGeneratedSoundpack(this.soundpack)) return false
+    const { fallback } = opts
+
     const sounds = this._getSoundpackSounds(this.soundpack)
     const filename = sounds[soundKey]
-    
-    if (!filename) return false
 
-    let audio = this._audioElements[soundKey]
+    if (!filename) {
+      console.log('[Sound] No sound file for', soundKey, 'in pack', this.soundpack)
+      return false
+    }
+
+    const cacheKey = `${this.soundpack}:${soundKey}`
+    let audio = this._audioElements[cacheKey]
     if (!audio) {
-      audio = new Audio(`/sounds/classic/${filename}`)
+      audio = new Audio(filename)
       audio.preload = 'auto'
-      this._audioElements[soundKey] = audio
+      this._audioElements[cacheKey] = audio
     }
 
     if (audio) {
       audio.volume = this.soundpackVolume * this.volume
       audio.currentTime = 0
-      audio.play().catch(() => {})
+      audio.play().catch((err) => {
+        console.log('[Sound] Error playing sound:', soundKey, err)
+        try { audio.pause() } catch {}
+        audio.currentTime = 0
+        if (typeof fallback === 'function') {
+          fallback()
+        }
+      })
       return true
     }
     return false
@@ -175,15 +348,22 @@ class SoundService {
 
   playSound(soundKey) {
     if (!this.enabled) return
+    if (!this._areSoundsEnabled()) return
     
     // If using soundpack and sound exists in pack, play from pack
-    if (this.soundpack !== 'default') {
-      if (this._playSoundpackSound(soundKey)) {
+    if (!this._isRuntimeGeneratedSoundpack(this.soundpack)) {
+      if (this._playSoundpackSound(soundKey, {
+        fallback: () => this._playGeneratedSoundByKey(soundKey)
+      })) {
         return
       }
     }
     
     // Fall back to default generated sound
+    this._playGeneratedSoundByKey(soundKey)
+  }
+
+  _playGeneratedSoundByKey(soundKey) {
     const methodMap = {
       ringtone: 'callRingtone',
       messageReceived: 'messageReceived',
@@ -212,15 +392,73 @@ class SoundService {
       notification: 'notification',
       error: 'error',
       success: 'success',
-      typing: 'typing',
+       typing: 'typing',
+      messageSent: 'messageSent',
       welcome: 'welcome',
-      logout: 'logoutSound'
+      logout: 'logoutSound',
+      victory: 'victory',
+      defeat: 'defeat',
+      draw: 'draw',
+      gameStart: 'gameStart',
+      gameEnd: 'gameEnd',
+      playerJoin: 'playerJoin',
+      playerLeave: 'playerLeave',
+      yourTurn: 'yourTurn',
+      countdown: 'countdown',
+      timerStart: 'timerStart',
+      timerEnd: 'timerEnd',
+      moveValid: 'moveValid',
+      moveInvalid: 'moveInvalid',
+      turnSwitch: 'turnSwitch',
+      combo: 'combo',
+      streak: 'streak',
+      powerUp: 'powerUp',
+      damage: 'damage',
+      heal: 'heal',
+      levelUp: 'levelUp',
+      achievementUnlock: 'achievementUnlock',
+      buttonClick: 'buttonClick',
+      menuOpen: 'menuOpen',
+      menuClose: 'menuClose',
+      popupOpen: 'popupOpen',
+      popupClose: 'popupClose',
+      spectatorJoin: 'spectatorJoin',
+      spectatorLeave: 'spectatorLeave',
+      hostTransfer: 'hostTransfer',
+      playerReady: 'playerReady',
+      playerNotReady: 'playerNotReady',
+      roundWin: 'roundWin',
+      roundLoss: 'roundLoss',
+      suddenDeath: 'suddenDeath',
+      overtime: 'overtime',
+      intermission: 'intermission',
+      pause: 'pause',
+      resume: 'resume',
+      selectionChange: 'selectionChange',
+      coinCollect: 'coinCollect',
+      xpGain: 'xpGain',
+      winner: 'winner',
+      loser: 'loser'
     }
     
     const method = methodMap[soundKey]
     if (method && typeof this[method] === 'function') {
-      this[method]()
+      const prevPack = this.soundpack
+      this.soundpack = 'default'
+      try {
+        this[method]()
+      } finally {
+        this.soundpack = prevPack
+      }
     }
+  }
+
+  _stopAllSoundpackAudio() {
+    Object.values(this._audioElements).forEach((audio) => {
+      if (!audio) return
+      try { audio.pause() } catch {}
+      audio.currentTime = 0
+    })
   }
 
   welcome() {
@@ -263,6 +501,39 @@ class SoundService {
 
   previewSound(soundKey) {
     this.playSound(soundKey)
+  }
+
+  prime() {
+    this._ensureContext()
+    if (!this._ctx) return
+    if (this._ctx.state === 'running') {
+      this._gestureReady = true
+      this._flush()
+      return
+    }
+    this._ctx.resume().then(() => {
+      if (this._ctx?.state === 'running') {
+        this._gestureReady = true
+        this._flush()
+      }
+    }).catch(() => {})
+  }
+
+  stopPreview(soundKey) {
+    if (!soundKey) return
+
+    if (this._isRuntimeGeneratedSoundpack(this.soundpack)) {
+      if (soundKey === 'ringtone') this.stopRingtone()
+      this._stopCurrentSounds()
+      return
+    }
+
+    const cacheKey = `${this.soundpack}:${soundKey}`
+    const audio = this._audioElements[cacheKey]
+    if (audio) {
+      try { audio.pause() } catch {}
+      audio.currentTime = 0
+    }
   }
 
   _playUISound(freq, dur) {
@@ -316,12 +587,15 @@ class SoundService {
       const saved = localStorage.getItem('voltchat_settings')
       if (saved) {
         const settings = JSON.parse(saved)
-        if (settings.soundpack && settings.soundpack !== 'default') {
+        console.log('[Sound] Loading soundpack settings:', settings.soundpack, settings.soundpackVolume)
+        if (settings.soundpack) {
           this.setSoundpack(settings.soundpack)
         }
         if (settings.soundpackVolume !== undefined) {
           this.setSoundpackVolume(settings.soundpackVolume)
         }
+      } else {
+        console.log('[Sound] No soundpack settings found')
       }
     } catch (e) {
       console.error('[Sound] Error loading soundpack settings:', e)
@@ -508,15 +782,20 @@ class SoundService {
   }
 
   _ambient(ctx, freq, start, dur, vol, attack = 0.1) {
+    const profile = this._getCurrentGeneratedProfile()
+    const tunedFreq = Math.max(1, freq * (profile.freqScale || 1))
+    const tunedDur = Math.max(0.03, dur * (profile.durationScale || 1))
+    const tunedAttack = Math.max(0.002, attack * (profile.attackScale || 1))
+    const tunedVol = Math.max(0.001, vol * (profile.gainScale || 1))
     const g = ctx.createGain()
-    const end = start + dur
+    const end = start + tunedDur
     g.gain.setValueAtTime(0.0001, start)
-    g.gain.linearRampToValueAtTime(vol, start + attack)
-    g.gain.setValueAtTime(vol, start + 1)
+    g.gain.linearRampToValueAtTime(tunedVol, start + tunedAttack)
+    g.gain.setValueAtTime(tunedVol, start + 1)
     g.gain.exponentialRampToValueAtTime(0.0001, end)
     const osc = ctx.createOscillator()
-    osc.type = 'sine'
-    osc.frequency.value = freq
+    osc.type = profile.wave || 'sine'
+    osc.frequency.value = tunedFreq
     osc.connect(g)
     osc.start(start)
     osc.stop(end + 0.1)
@@ -710,7 +989,7 @@ class SoundService {
   }
 
   callLeft() {
-    if (this._tryPlaySoundpack('userLeft')) return
+    if (this._tryPlaySoundpack('callLeft')) return
     this._play((ctx) => {
       const t = ctx.currentTime
       const out = this._out
@@ -1050,18 +1329,19 @@ class SoundService {
   }
 
   // ─── Ringtone Loop Control ────────────────────────────────────────────────
+  // Intentionally cheap and awkward ringtone for the generated default pack
+
   // Start repeating ringtone - plays until stopRingtone() is called
   // Call this when an incoming call arrives
   startRingtone() {
     if (this._ringtonePlaying) return  // Already playing
     this._ringtonePlaying = true
-    
+
+    const ringtoneDuration = 6500
+
     // Play immediately
     this.callRingtone()
-    
-    // Calculate ringtone duration (8 notes * (0.25 + 0.08) = 2.64s, plus some buffer)
-    const ringtoneDuration = 3000  // 3 seconds
-    
+
     // Set up interval to repeat
     this._ringtoneInterval = setInterval(() => {
       if (this._ringtonePlaying) {
@@ -1073,110 +1353,148 @@ class SoundService {
   // Stop the ringtone loop - call when call is accepted, declined, or cancelled
   stopRingtone() {
     this._ringtonePlaying = false
-    
+
     if (this._ringtoneInterval) {
       clearInterval(this._ringtoneInterval)
       this._ringtoneInterval = null
     }
-    
+
     // Also stop any currently playing sounds
     this._stopCurrentSounds()
   }
 
-  // 8-note ambient melodic ringtone - pentatonic scale with effects
-  // Notes: C5, D5, E5, G5, A5, C6, D6, E6 (pentatonic - naturally melodic)
+  // Intentionally bad ringtone: advanced synth stack, but still cheap and annoying
   callRingtone() {
     if (this._tryPlaySoundpack('ringtone')) return
+
     this._play((ctx) => {
       const t = ctx.currentTime
       const out = this._out
+      const sat = this._sat(ctx, 5.2)
+      const satGain = this._gain(ctx, 0.78)
+      const dly = this._delay(ctx, 0.11, 0.24)
+      const dg = this._gain(ctx, 0.16)
+      sat.connect(satGain)
+      satGain.connect(out)
+      dly.node.connect(dg)
+      dg.connect(out)
 
-      // Create effects chain for ambient feel
-      const rev = this._reverb(ctx, 3, 2.5)  // Longer reverb for spaciousness
-      const dly = this._delay(ctx, 0.2, 0.35)  // Subtle delay for depth
-      const rg = this._gain(ctx, 0.12)  // Reverb wet gain
-      const dg = this._gain(ctx, 0.25)  // Delay wet gain
+      const pattern = [
+        { freq: 641.2, time: 0.00, dur: 0.17, vol: 0.13, detune: -21, mod: 2.71, idx: 1.7 },
+        { freq: 712.8, time: 0.22, dur: 0.14, vol: 0.12, detune: 11, mod: 1.99, idx: 1.9 },
+        { freq: 641.2, time: 0.47, dur: 0.18, vol: 0.12, detune: -13, mod: 2.42, idx: 1.6 },
+        { freq: 498.4, time: 0.74, dur: 0.26, vol: 0.11, detune: 7, mod: 1.51, idx: 2.2 },
+        { freq: 735.5, time: 1.32, dur: 0.13, vol: 0.10, detune: 19, mod: 2.91, idx: 1.8 },
+        { freq: 603.3, time: 1.56, dur: 0.17, vol: 0.10, detune: -9, mod: 1.73, idx: 2.1 },
+        { freq: 735.5, time: 1.83, dur: 0.21, vol: 0.12, detune: 24, mod: 2.62, idx: 2.3 },
+        { freq: 430.0, time: 2.51, dur: 0.31, vol: 0.10, detune: -17, mod: 1.37, idx: 2.5 }
+      ]
 
-      rev.connect(rg); rg.connect(out)
-      dly.node.connect(dg); dg.connect(out)
+      for (let repeat = 0; repeat < 2; repeat++) {
+        const repeatOffset = repeat * 3.05
 
-      // Pentatonic scale frequencies (C major pentatonic, ascending)
-      // C5=523.25, D5=587.33, E5=659.25, G5=783.99, A5=880, C6=1046.5, D6=1174.66, E6=1318.51
-      const notes = [523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1174.66, 1318.51]
+        pattern.forEach((note, index) => {
+          const startTime = t + note.time + repeatOffset
+          const voiceBus = ctx.createGain()
+          const voiceFilter = ctx.createBiquadFilter()
+          const voiceGain = ctx.createGain()
+          const wobble = ctx.createOscillator()
+          const wobbleDepth = ctx.createGain()
 
-      // Note duration and gap for clean separation
-      const noteDuration = 0.25
-      const noteGap = 0.08
-      const attack = 0.02
+          voiceFilter.type = 'bandpass'
+          voiceFilter.frequency.setValueAtTime(note.freq * (1.7 + (index * 0.04)), startTime)
+          voiceFilter.Q.setValueAtTime(4.2, startTime)
+          voiceGain.gain.setValueAtTime(0.0001, startTime)
+          voiceGain.gain.linearRampToValueAtTime(note.vol, startTime + 0.004)
+          voiceGain.gain.exponentialRampToValueAtTime(0.0001, startTime + note.dur)
 
-      notes.forEach((freq, i) => {
-        const startTime = t + i * (noteDuration + noteGap)
+          wobble.type = 'triangle'
+          wobble.frequency.setValueAtTime(8 + index, startTime)
+          wobbleDepth.gain.setValueAtTime(90 + (index * 8), startTime)
+          wobble.connect(wobbleDepth)
+          wobbleDepth.connect(voiceFilter.frequency)
 
-        // Main tone with soft sine wave
-        const osc = ctx.createOscillator()
-        const gain = ctx.createGain()
+          voiceBus.connect(voiceFilter)
+          voiceFilter.connect(voiceGain)
+          voiceGain.connect(sat)
+          voiceGain.connect(dly.node)
 
-        osc.type = 'sine'
-        osc.frequency.value = freq
+          const carrier = ctx.createOscillator()
+          const modOsc = ctx.createOscillator()
+          const modGain = ctx.createGain()
+          carrier.type = index % 2 === 0 ? 'square' : 'sawtooth'
+          modOsc.type = 'sine'
+          carrier.frequency.setValueAtTime(note.freq, startTime)
+          carrier.detune.setValueAtTime(note.detune, startTime)
+          modOsc.frequency.setValueAtTime(note.freq * note.mod, startTime)
+          modGain.gain.setValueAtTime(note.freq * note.idx, startTime)
+          modOsc.connect(modGain)
+          modGain.connect(carrier.frequency)
+          carrier.connect(voiceBus)
+          carrier.start(startTime)
+          modOsc.start(startTime)
+          carrier.stop(startTime + note.dur + 0.03)
+          modOsc.stop(startTime + note.dur + 0.03)
+          this._playingSources.push(carrier, modOsc)
 
-        // Slight detune for warmth (two oscillators slightly detuned)
-        const osc2 = ctx.createOscillator()
-        const gain2 = ctx.createGain()
-        osc2.type = 'sine'
-        osc2.frequency.value = freq * 1.003  // 3 cents detune
-        osc2.detune.value = 5
+          const aliasLayer = ctx.createOscillator()
+          const aliasGain = ctx.createGain()
+          aliasLayer.type = 'triangle'
+          aliasLayer.frequency.setValueAtTime((note.freq * 2.03) + 9, startTime)
+          aliasLayer.detune.setValueAtTime(31 - (index * 3), startTime)
+          aliasGain.gain.setValueAtTime(0.0001, startTime)
+          aliasGain.gain.linearRampToValueAtTime(note.vol * 0.32, startTime + 0.002)
+          aliasGain.gain.exponentialRampToValueAtTime(0.0001, startTime + (note.dur * 0.7))
+          aliasLayer.connect(aliasGain)
+          aliasGain.connect(voiceBus)
+          aliasLayer.start(startTime)
+          aliasLayer.stop(startTime + note.dur)
+          this._playingSources.push(aliasLayer)
 
-        // Envelope for each note - soft attack, gentle decay
-        const vol = 0.06
-        gain.gain.setValueAtTime(0.0001, startTime)
-        gain.gain.linearRampToValueAtTime(vol, startTime + attack)
-        gain.gain.setValueAtTime(vol, startTime + noteDuration * 0.6)
-        gain.gain.exponentialRampToValueAtTime(0.0001, startTime + noteDuration)
+          const thump = ctx.createOscillator()
+          const thumpGain = ctx.createGain()
+          thump.type = 'square'
+          thump.frequency.setValueAtTime(note.freq * 0.49, startTime)
+          thump.detune.setValueAtTime(-35, startTime)
+          thumpGain.gain.setValueAtTime(0.0001, startTime)
+          thumpGain.gain.linearRampToValueAtTime(note.vol * 0.3, startTime + 0.002)
+          thumpGain.gain.exponentialRampToValueAtTime(0.0001, startTime + (note.dur * 0.9))
+          thump.connect(thumpGain)
+          thumpGain.connect(voiceBus)
+          thump.start(startTime)
+          thump.stop(startTime + note.dur)
+          this._playingSources.push(thump)
 
-        gain2.gain.setValueAtTime(0.0001, startTime)
-        gain2.gain.linearRampToValueAtTime(vol * 0.5, startTime + attack)
-        gain2.gain.setValueAtTime(vol * 0.5, startTime + noteDuration * 0.6)
-        gain2.gain.exponentialRampToValueAtTime(0.0001, startTime + noteDuration)
+          const click = ctx.createBufferSource()
+          const clickGain = ctx.createGain()
+          const clickFilter = ctx.createBiquadFilter()
+          const clickBuffer = ctx.createBuffer(1, Math.max(64, Math.floor(ctx.sampleRate * 0.03)), ctx.sampleRate)
+          const clickData = clickBuffer.getChannelData(0)
+          for (let i = 0; i < clickData.length; i += 1) {
+            clickData[i] = (Math.random() * 2 - 1) * (1 - (i / clickData.length))
+          }
+          click.buffer = clickBuffer
+          clickFilter.type = 'highpass'
+          clickFilter.frequency.setValueAtTime(1800 + (index * 120), startTime)
+          clickGain.gain.setValueAtTime(note.vol * 0.18, startTime)
+          clickGain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.028)
+          click.connect(clickFilter)
+          clickFilter.connect(clickGain)
+          clickGain.connect(sat)
+          click.start(startTime)
+          click.stop(startTime + 0.03)
+          this._playingSources.push(click)
 
-        // Connect oscillators
-        osc.connect(gain)
-        osc2.connect(gain2)
-
-        // Route to output and effects
-        gain.connect(out)
-        gain.connect(dly.node)
-        gain.connect(rev)
-        gain2.connect(out)
-        gain2.connect(dly.node)
-        gain2.connect(rev)
-
-        osc.start(startTime)
-        osc.stop(startTime + noteDuration + 0.1)
-        osc2.start(startTime)
-        osc2.stop(startTime + noteDuration + 0.1)
-
-        this._playingSources.push(osc, osc2)
-      })
-
-      // Add a subtle low drone for warmth (C4)
-      const droneOsc = ctx.createOscillator()
-      const droneGain = ctx.createGain()
-      droneOsc.type = 'sine'
-      droneOsc.frequency.value = 261.63  // C4
-      droneGain.gain.setValueAtTime(0.0001, t)
-      droneGain.gain.linearRampToValueAtTime(0.015, t + 0.1)
-      droneGain.gain.setValueAtTime(0.015, t + notes.length * (noteDuration + noteGap) - 0.3)
-      droneGain.gain.exponentialRampToValueAtTime(0.0001, t + notes.length * (noteDuration + noteGap))
-      droneOsc.connect(droneGain)
-      droneGain.connect(out)
-      droneGain.connect(rev)
-      droneOsc.start(t)
-      droneOsc.stop(t + notes.length * (noteDuration + noteGap) + 0.5)
-      this._playingSources.push(droneOsc)
+          wobble.start(startTime)
+          wobble.stop(startTime + note.dur + 0.02)
+          this._playingSources.push(wobble)
+        })
+      }
     })
   }
 
   serverJoined() {
+    if (this._tryPlaySoundpack('serverJoined')) return
     this._play((ctx) => {
       const t = ctx.currentTime
       const out = this._out
@@ -1195,6 +1513,7 @@ class SoundService {
   }
 
   roleAdded() {
+    if (this._tryPlaySoundpack('roleAdded')) return
     this._play((ctx) => {
       const t = ctx.currentTime
       const out = this._out
@@ -1213,6 +1532,7 @@ class SoundService {
   }
 
   roleRemoved() {
+    if (this._tryPlaySoundpack('roleRemoved')) return
     this._play((ctx) => {
       const t = ctx.currentTime
       const out = this._out
@@ -1231,6 +1551,7 @@ class SoundService {
   }
 
   notification() {
+    if (this._tryPlaySoundpack('notification')) return
     this._play((ctx) => {
       const t = ctx.currentTime
       const out = this._out
@@ -1249,6 +1570,7 @@ class SoundService {
   }
 
   error() {
+    if (this._tryPlaySoundpack('error')) return
     this._play((ctx) => {
       const t = ctx.currentTime
       const out = this._out
@@ -1267,6 +1589,7 @@ class SoundService {
   }
 
   success() {
+    if (this._tryPlaySoundpack('success')) return
     this._play((ctx) => {
       const t = ctx.currentTime
       const out = this._out
@@ -1285,6 +1608,7 @@ class SoundService {
   }
 
   typing() {
+    if (this._tryPlaySoundpack('typing')) return
     this._play((ctx) => {
       const t = ctx.currentTime
       const out = this._out
@@ -1300,6 +1624,710 @@ class SoundService {
   }
 
   messageSent() {
+    if (this._tryPlaySoundpack('messageSent')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [440]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.08, 0.015, 0.01)
+        g.connect(out)
+      })
+    })
+  }
+
+  victory() {
+    if (this._tryPlaySoundpack('victory')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 4, 4)
+      const dly = this._delay(ctx, 0.2, 0.6)
+      const rg = this._gain(ctx, 0.1)
+      const dg = this._gain(ctx, 0.7)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [523.25, 659.25, 783.99, 1046.50]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.1, 0.4, 0.04, 0.05)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  defeat() {
+    if (this._tryPlaySoundpack('defeat')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const dly = this._delay(ctx, 0.15, 0.5)
+      const rg = this._gain(ctx, 0.08)
+      const dg = this._gain(ctx, 0.5)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [392, 349.23, 311.13, 261.63]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.12, 0.35, 0.035, 0.05)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  draw() {
+    if (this._tryPlaySoundpack('draw')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 2, 2)
+      const dly = this._delay(ctx, 0.1, 0.4)
+      const rg = this._gain(ctx, 0.06)
+      const dg = this._gain(ctx, 0.4)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [440, 440, 415.30, 415.30]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.15, 0.3, 0.03, 0.04)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  gameStart() {
+    if (this._tryPlaySoundpack('gameStart')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const dly = this._delay(ctx, 0.15, 0.5)
+      const rg = this._gain(ctx, 0.08)
+      const dg = this._gain(ctx, 0.5)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [523.25, 659.25, 783.99]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.1, 0.35, 0.04, 0.04)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  gameEnd() {
+    if (this._tryPlaySoundpack('gameEnd')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const dly = this._delay(ctx, 0.12, 0.5)
+      const rg = this._gain(ctx, 0.07)
+      const dg = this._gain(ctx, 0.5)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [392, 329.63, 261.63]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.12, 0.3, 0.035, 0.05)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  playerJoin() {
+    if (this._tryPlaySoundpack('playerJoin')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 2, 2)
+      const dly = this._delay(ctx, 0.08, 0.4)
+      const rg = this._gain(ctx, 0.05)
+      const dg = this._gain(ctx, 0.4)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [440, 554.37]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.08, 0.2, 0.025, 0.02)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  playerLeave() {
+    if (this._tryPlaySoundpack('playerLeave')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 2, 2)
+      const dly = this._delay(ctx, 0.08, 0.4)
+      const rg = this._gain(ctx, 0.05)
+      const dg = this._gain(ctx, 0.4)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [440, 369.99]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.1, 0.2, 0.025, 0.02)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  yourTurn() {
+    if (this._tryPlaySoundpack('yourTurn')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const dly = this._delay(ctx, 0.1, 0.5)
+      const rg = this._gain(ctx, 0.08)
+      const dg = this._gain(ctx, 0.5)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [587.33, 880]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.1, 0.25, 0.035, 0.03)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  countdown() {
+    if (this._tryPlaySoundpack('countdown')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [523.25, 523.25, 523.25, 783.99]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.5, 0.3, 0.06, 0.02)
+        g.connect(out)
+      })
+    })
+  }
+
+  timerStart() {
+    if (this._tryPlaySoundpack('timerStart')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 2, 2)
+      const rg = this._gain(ctx, 0.05)
+      rev.connect(rg); rg.connect(out)
+      const notes = [659.25]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.15, 0.03, 0.01)
+        g.connect(out); g.connect(rev)
+      })
+    })
+  }
+
+  timerEnd() {
+    if (this._tryPlaySoundpack('timerEnd')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 2, 2)
+      const dly = this._delay(ctx, 0.1, 0.5)
+      const rg = this._gain(ctx, 0.06)
+      const dg = this._gain(ctx, 0.5)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [329.63]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.25, 0.04, 0.02)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  moveValid() {
+    if (this._tryPlaySoundpack('moveValid')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [880]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.1, 0.03, 0.01)
+        g.connect(out)
+      })
+    })
+  }
+
+  moveInvalid() {
+    if (this._tryPlaySoundpack('moveInvalid')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [220]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.15, 0.04, 0.01)
+        g.connect(out)
+      })
+    })
+  }
+
+  turnSwitch() {
+    if (this._tryPlaySoundpack('turnSwitch')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 2, 2)
+      const rg = this._gain(ctx, 0.05)
+      rev.connect(rg); rg.connect(out)
+      const notes = [440]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.15, 0.025, 0.015)
+        g.connect(out); g.connect(rev)
+      })
+    })
+  }
+
+  combo() {
+    if (this._tryPlaySoundpack('combo')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const dly = this._delay(ctx, 0.1, 0.5)
+      const rg = this._gain(ctx, 0.07)
+      const dg = this._gain(ctx, 0.5)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [523.25, 659.25, 783.99, 1046.50]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.08, 0.2, 0.035, 0.02)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  streak() {
+    if (this._tryPlaySoundpack('streak')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const dly = this._delay(ctx, 0.08, 0.5)
+      const rg = this._gain(ctx, 0.06)
+      const dg = this._gain(ctx, 0.5)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [698.46, 880, 1046.50]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.06, 0.15, 0.03, 0.015)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  powerUp() {
+    if (this._tryPlaySoundpack('powerUp')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 4, 4)
+      const dly = this._delay(ctx, 0.12, 0.6)
+      const rg = this._gain(ctx, 0.08)
+      const dg = this._gain(ctx, 0.6)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [523.25, 659.25, 783.99, 987.77, 1174.66]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.07, 0.25, 0.03, 0.02)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  damage() {
+    if (this._tryPlaySoundpack('damage')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [110]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.15, 0.08, 0.01)
+        g.connect(out)
+      })
+    })
+  }
+
+  heal() {
+    if (this._tryPlaySoundpack('heal')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const dly = this._delay(ctx, 0.15, 0.5)
+      const rg = this._gain(ctx, 0.06)
+      const dg = this._gain(ctx, 0.5)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [523.25, 659.25]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.1, 0.25, 0.03, 0.02)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  levelUp() {
+    if (this._tryPlaySoundpack('levelUp')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 4, 4)
+      const dly = this._delay(ctx, 0.15, 0.6)
+      const rg = this._gain(ctx, 0.09)
+      const dg = this._gain(ctx, 0.6)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [523.25, 659.25, 783.99, 1046.50, 1318.51, 1567.98]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.08, 0.3, 0.035, 0.03)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  achievementUnlock() {
+    if (this._tryPlaySoundpack('achievementUnlock')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 4, 4)
+      const dly = this._delay(ctx, 0.15, 0.6)
+      const rg = this._gain(ctx, 0.08)
+      const dg = this._gain(ctx, 0.6)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [523.25, 659.25, 783.99, 1046.50, 1318.51]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.1, 0.35, 0.035, 0.03)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  buttonClick() {
+    if (this._tryPlaySoundpack('buttonClick')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [1200]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.05, 0.02, 0.005)
+        g.connect(out)
+      })
+    })
+  }
+
+  menuOpen() {
+    if (this._tryPlaySoundpack('menuOpen')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 2, 2)
+      const rg = this._gain(ctx, 0.04)
+      rev.connect(rg); rg.connect(out)
+      const notes = [392]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.12, 0.02, 0.015)
+        g.connect(out); g.connect(rev)
+      })
+    })
+  }
+
+  menuClose() {
+    if (this._tryPlaySoundpack('menuClose')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 2, 2)
+      const rg = this._gain(ctx, 0.04)
+      rev.connect(rg); rg.connect(out)
+      const notes = [349.23]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.1, 0.02, 0.015)
+        g.connect(out); g.connect(rev)
+      })
+    })
+  }
+
+  popupOpen() {
+    if (this._tryPlaySoundpack('popupOpen')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const rg = this._gain(ctx, 0.05)
+      rev.connect(rg); rg.connect(out)
+      const notes = [440, 554.37]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.05, 0.1, 0.02, 0.01)
+        g.connect(out); g.connect(rev)
+      })
+    })
+  }
+
+  popupClose() {
+    if (this._tryPlaySoundpack('popupClose')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 2, 2)
+      const rg = this._gain(ctx, 0.04)
+      rev.connect(rg); rg.connect(out)
+      const notes = [415.30, 349.23]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.05, 0.1, 0.02, 0.01)
+        g.connect(out); g.connect(rev)
+      })
+    })
+  }
+
+  spectatorJoin() {
+    if (this._tryPlaySoundpack('spectatorJoin')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [587.33]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.15, 0.02, 0.015)
+        g.connect(out)
+      })
+    })
+  }
+
+  spectatorLeave() {
+    if (this._tryPlaySoundpack('spectatorLeave')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [493.88]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.15, 0.02, 0.015)
+        g.connect(out)
+      })
+    })
+  }
+
+  hostTransfer() {
+    if (this._tryPlaySoundpack('hostTransfer')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const dly = this._delay(ctx, 0.12, 0.5)
+      const rg = this._gain(ctx, 0.06)
+      const dg = this._gain(ctx, 0.5)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [523.25, 659.25, 523.25, 783.99]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.1, 0.2, 0.03, 0.02)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  playerReady() {
+    if (this._tryPlaySoundpack('playerReady')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [698.46]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.15, 0.025, 0.015)
+        g.connect(out)
+      })
+    })
+  }
+
+  playerNotReady() {
+    if (this._tryPlaySoundpack('playerNotReady')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [392]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.15, 0.025, 0.015)
+        g.connect(out)
+      })
+    })
+  }
+
+  roundWin() {
+    if (this._tryPlaySoundpack('roundWin')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 4, 4)
+      const dly = this._delay(ctx, 0.15, 0.6)
+      const rg = this._gain(ctx, 0.08)
+      const dg = this._gain(ctx, 0.6)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [587.33, 739.99, 880, 1108.73]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.08, 0.3, 0.035, 0.03)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  roundLoss() {
+    if (this._tryPlaySoundpack('roundLoss')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const dly = this._delay(ctx, 0.12, 0.5)
+      const rg = this._gain(ctx, 0.07)
+      const dg = this._gain(ctx, 0.5)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [440, 369.99, 311.13, 261.63]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.1, 0.25, 0.03, 0.03)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  suddenDeath() {
+    if (this._tryPlaySoundpack('suddenDeath')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const dly = this._delay(ctx, 0.1, 0.5)
+      const rg = this._gain(ctx, 0.08)
+      const dg = this._gain(ctx, 0.5)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [261.63, 246.94, 220, 196]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.3, 0.35, 0.04, 0.02)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  overtime() {
+    if (this._tryPlaySoundpack('overtime')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const dly = this._delay(ctx, 0.12, 0.5)
+      const rg = this._gain(ctx, 0.07)
+      const dg = this._gain(ctx, 0.5)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [349.23, 349.23, 440]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.15, 0.25, 0.035, 0.02)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  intermission() {
+    if (this._tryPlaySoundpack('intermission')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 2, 2)
+      const dly = this._delay(ctx, 0.1, 0.4)
+      const rg = this._gain(ctx, 0.05)
+      const dg = this._gain(ctx, 0.4)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [440, 493.88, 523.25]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.2, 0.3, 0.03, 0.02)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  pause() {
+    if (this._tryPlaySoundpack('pause')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [330]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.1, 0.025, 0.01)
+        g.connect(out)
+      })
+    })
+  }
+
+  resume() {
+    if (this._tryPlaySoundpack('resume')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [440]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.1, 0.025, 0.01)
+        g.connect(out)
+      })
+    })
+  }
+
+  selectionChange() {
+    if (this._tryPlaySoundpack('selectionChange')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const notes = [660]
+      notes.forEach((freq) => {
+        const g = this._ambient(ctx, freq, t, 0.05, 0.015, 0.008)
+        g.connect(out)
+      })
+    })
+  }
+
+  coinCollect() {
+    if (this._tryPlaySoundpack('coinCollect')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const rg = this._gain(ctx, 0.05)
+      rev.connect(rg); rg.connect(out)
+      const notes = [987.77, 1318.51]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.05, 0.1, 0.025, 0.01)
+        g.connect(out); g.connect(rev)
+      })
+    })
+  }
+
+  xpGain() {
+    if (this._tryPlaySoundpack('xpGain')) return
+    this._play((ctx) => {
+      const t = ctx.currentTime
+      const out = this._out
+      const rev = this._reverb(ctx, 3, 3)
+      const dly = this._delay(ctx, 0.1, 0.5)
+      const rg = this._gain(ctx, 0.05)
+      const dg = this._gain(ctx, 0.4)
+      rev.connect(rg); rg.connect(out)
+      dly.node.connect(dg); dg.connect(out)
+      const notes = [523.25, 659.25]
+      notes.forEach((freq, i) => {
+        const g = this._ambient(ctx, freq, t + i * 0.08, 0.15, 0.025, 0.015)
+        g.connect(out); g.connect(dly.node); g.connect(rev)
+      })
+    })
+  }
+
+  winner() {
+    this.victory()
+  }
+
+  loser() {
+    this.defeat()
   }
 }
 

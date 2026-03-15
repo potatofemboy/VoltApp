@@ -1,7 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { X, ShieldAlert, AlertTriangle, ShieldCheck, Camera, RotateCcw, Eye, FileText, ScanLine, Lock, Code, ChevronRight, ChevronLeft, CheckCircle, XCircle, ArrowRight } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import {
+  XMarkIcon,
+  ShieldExclamationIcon,
+  ExclamationTriangleIcon,
+  ShieldCheckIcon,
+  CameraIcon,
+  ArrowUturnDownIcon,
+  LockClosedIcon,
+  ChevronRightIcon,
+  ChevronLeftIcon,
+  CheckCircleIcon,
+  XCircleIcon,
+  ArrowRightIcon,
+  GlobeAltIcon
+} from '@heroicons/react/24/outline'
 import * as faceapi from '@vladmandic/face-api'
-import { createWorker } from 'tesseract.js'
 import { apiService } from '../../services/apiService'
 import { useTranslation } from '../../hooks/useTranslation'
 import './Modal.css'
@@ -9,190 +23,84 @@ import './AgeVerificationModal.css'
 
 const MODEL_URL = '/models'
 const AGE_THRESHOLD = 18
-const AGE_BUFFER = 2
-const PASS_PROBABILITY = 0.95
-const FAIL_PROBABILITY = 0.85
-const MIN_VALID_FRAMES = 4
-const TARGET_FRAMES = 15
-const CAPTURE_DURATION_MS = 5000
+const PASS_PROBABILITY = 0.98
+const FAIL_PROBABILITY = 0.8
+const MIN_VALID_FRAMES = 8
+const TARGET_FRAMES = 24
+const CAPTURE_DURATION_MS = 4500
 const MAX_RETRIES = 3
+
 const MIN_FACE_RATIO = 0.12
-const MAX_YAW_DEGREES = 25
+const MAX_ROLL_DEGREES = 25
 const SHARPNESS_THRESHOLD = 30
 const LIVENESS_MOTION_THRESHOLD = 2
-const LIVENESS_MIN_MOTION_FRAMES = 3
-const FACE_MATCH_THRESHOLD = 0.5
-
-const MRZ_WEIGHTS = [7, 3, 1]
-const MRZ_CHAR_VALUE = (ch) => {
-  if (ch === '<') return 0
-  if (ch >= '0' && ch <= '9') return parseInt(ch, 10)
-  if (ch >= 'A' && ch <= 'Z') return ch.charCodeAt(0) - 55
-  return 0
-}
-
-const computeMrzCheckDigit = (str) => {
-  let total = 0
-  for (let i = 0; i < str.length; i++) {
-    total += MRZ_CHAR_VALUE(str[i]) * MRZ_WEIGHTS[i % 3]
-  }
-  return total % 10
-}
-
-const validateMrzChecksum = (field, check) => {
-  return computeMrzCheckDigit(field) === parseInt(check, 10)
-}
-
-const parseMrzLines = (lines) => {
-  const cleaned = lines.map(l => l.replace(/\s/g, '').toUpperCase())
-  const result = { docType: null, country: null, dob: null, ageOver18: false, mrzValid: false, checksumValid: false, layoutValid: false }
-
-  if (cleaned.length === 2 && cleaned[0].length >= 44 && cleaned[1].length >= 44) {
-    result.docType = 'passport'
-    result.layoutValid = true
-    const line1 = cleaned[0]
-    const line2 = cleaned[1]
-    result.country = line1.substring(2, 5).replace(/</g, '')
-
-    const dobRaw = line2.substring(0, 6)
-    const dobCheck = line2[6]
-    if (/^\d{6}$/.test(dobRaw)) {
-      result.checksumValid = validateMrzChecksum(dobRaw, dobCheck)
-      const yy = parseInt(dobRaw.substring(0, 2), 10)
-      const mm = parseInt(dobRaw.substring(2, 4), 10)
-      const dd = parseInt(dobRaw.substring(4, 6), 10)
-      const century = yy > 50 ? 1900 : 2000
-      const year = century + yy
-      result.dob = `${year}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
-      const today = new Date()
-      const birth = new Date(year, mm - 1, dd)
-      const ageDiff = today.getFullYear() - birth.getFullYear()
-      const monthDiff = today.getMonth() - birth.getMonth()
-      const dayDiff = today.getDate() - birth.getDate()
-      const age = monthDiff < 0 || (monthDiff === 0 && dayDiff < 0) ? ageDiff - 1 : ageDiff
-      result.ageOver18 = age >= 18
-      result.mrzValid = true
-    }
-    return result
-  }
-
-  if (cleaned.length === 3 && cleaned[0].length >= 30) {
-    result.docType = 'id_card'
-    result.layoutValid = true
-    const line2 = cleaned[1] || ''
-    result.country = (cleaned[0].substring(2, 5) || '').replace(/</g, '')
-    const dobRaw = line2.substring(0, 6)
-    const dobCheck = line2[6]
-    if (/^\d{6}$/.test(dobRaw)) {
-      result.checksumValid = validateMrzChecksum(dobRaw, dobCheck)
-      const yy = parseInt(dobRaw.substring(0, 2), 10)
-      const mm = parseInt(dobRaw.substring(2, 4), 10)
-      const dd = parseInt(dobRaw.substring(4, 6), 10)
-      const century = yy > 50 ? 1900 : 2000
-      const year = century + yy
-      result.dob = `${year}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
-      const today = new Date()
-      const birth = new Date(year, mm - 1, dd)
-      const ageDiff = today.getFullYear() - birth.getFullYear()
-      const monthDiff = today.getMonth() - birth.getMonth()
-      const dayDiff = today.getDate() - birth.getDate()
-      const age = monthDiff < 0 || (monthDiff === 0 && dayDiff < 0) ? ageDiff - 1 : ageDiff
-      result.ageOver18 = age >= 18
-      result.mrzValid = true
-    }
-    return result
-  }
-
-  return result
-}
-
-const extractDobFromText = (text) => {
-  const patterns = [
-    /(?:DOB|DATE\s*OF\s*BIRTH|BORN|D\.O\.B)[:\s]*(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/i,
-    /(?:DOB|DATE\s*OF\s*BIRTH|BORN|D\.O\.B)[:\s]*(\d{2,4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/i,
-    /(\d{2})[\/\-\.](\d{2})[\/\-\.](\d{4})/,
-    /(\d{4})[\/\-\.](\d{2})[\/\-\.](\d{2})/,
-  ]
-  for (const pat of patterns) {
-    const m = text.match(pat)
-    if (!m) continue
-    let day, month, year
-    if (m[3] && m[3].length === 4) {
-      day = parseInt(m[1], 10); month = parseInt(m[2], 10); year = parseInt(m[3], 10)
-    } else if (m[1] && m[1].length === 4) {
-      year = parseInt(m[1], 10); month = parseInt(m[2], 10); day = parseInt(m[3], 10)
-    } else continue
-    if (year < 1900 || year > new Date().getFullYear() || month < 1 || month > 12 || day < 1 || day > 31) continue
-    const dob = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-    const today = new Date()
-    const birth = new Date(year, month - 1, day)
-    const ageDiff = today.getFullYear() - birth.getFullYear()
-    const monthDiff = today.getMonth() - birth.getMonth()
-    const dayDiff = today.getDate() - birth.getDate()
-    const age = monthDiff < 0 || (monthDiff === 0 && dayDiff < 0) ? ageDiff - 1 : ageDiff
-    return { dob, ageOver18: age >= 18 }
-  }
-  return null
-}
-
-const detectDocType = (text) => {
-  const upper = text.toUpperCase()
-  if (upper.includes('PASSPORT') || /P<[A-Z]{3}/.test(upper)) return 'passport'
-  if (upper.includes('DRIVING LIC') || upper.includes('DRIVER')) return 'driving_licence'
-  if (upper.includes('IDENTITY') || upper.includes('CARTE') || upper.includes('NATIONAL ID')) return 'id_card'
-  return 'unknown'
-}
+const LIVENESS_MIN_MOTION_FRAMES = 4
+const ACTIVE_BLINK_THRESHOLD = 0.2
+const ACTIVE_BLINK_MIN_COUNT = 2
 
 const AgeVerificationModal = ({ channelName, onClose, onVerified }) => {
   const { t } = useTranslation()
+
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const overlayCanvasRef = useRef(null)
   const streamRef = useRef(null)
   const animFrameRef = useRef(null)
   const abortRef = useRef(false)
-  const fileInputRef = useRef(null)
-  const idCanvasRef = useRef(null)
+
+  const phaseRef = useRef('idle')
+  const modelsLoadedRef = useRef(false)
+  const qualityStableCountRef = useRef(0)
+  const ageResultsRef = useRef([])
+  const landmarkHistoryRef = useRef([])
+  const livenessRef = useRef({ blinkCount: 0, eyesClosed: false })
 
   const [wizardPage, setWizardPage] = useState(0)
   const [slideDir, setSlideDir] = useState('forward')
   const [modelsReady, setModelsReady] = useState(false)
-  const [method, setMethod] = useState(null)
+  const [jurisdictions, setJurisdictions] = useState([])
+  const [selectedJurisdictionCode, setSelectedJurisdictionCode] = useState('GLOBAL')
+  const [policyLoading, setPolicyLoading] = useState(true)
+  const [policyUpdating, setPolicyUpdating] = useState(false)
+
   const [phase, setPhase] = useState('idle')
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
-  const [retriesLeft, setRetriesLeft] = useState(MAX_RETRIES)
-  const [progress, setProgress] = useState({ framesCollected: 0, totalTarget: TARGET_FRAMES, validFrames: 0 })
-  const [result, setResult] = useState(null)
-
-  const [faceDetected, setFaceDetected] = useState(false)
   const [qualityIssue, setQualityIssue] = useState('')
+  const [faceDetected, setFaceDetected] = useState(false)
+
+  const [retriesLeft, setRetriesLeft] = useState(MAX_RETRIES)
+  const [progress, setProgress] = useState({ framesCollected: 0, validFrames: 0, targetFrames: TARGET_FRAMES })
+
+  const [result, setResult] = useState(null)
   const [finalVerdict, setFinalVerdict] = useState(null)
 
-  const [idPhase, setIdPhase] = useState(null)
-  const [idStatus, setIdStatus] = useState('')
-  const [idResult, setIdResult] = useState(null)
-  const [idDocCaptured, setIdDocCaptured] = useState(false)
+  const [systemChecks, setSystemChecks] = useState({
+    secureContext: false,
+    mediaDevices: false,
+    getUserMedia: false,
+    webgl: false
+  })
 
-  const PAGES = ['welcome', 'info', 'method', 'verify', 'result', 'conclude']
+  const PAGES = ['welcome', 'info', 'verify', 'result', 'done']
 
-  const goToPage = (page) => {
-    setSlideDir(page > wizardPage ? 'forward' : 'back')
-    setWizardPage(page)
-  }
-
-  const phaseRef = useRef(phase)
-  const modelsLoadedRef = useRef(false)
-  const recognitionLoadedRef = useRef(false)
-  const ageResultsRef = useRef([])
-  const landmarkHistoryRef = useRef([])
-  const liveFaceDescriptorRef = useRef(null)
-  const faceProofRef = useRef(null)
-
-  useEffect(() => { phaseRef.current = phase }, [phase])
+  useEffect(() => {
+    phaseRef.current = phase
+  }, [phase])
 
   useEffect(() => {
     loadModels()
+    loadAgeContext()
+
+    const canvas = document.createElement('canvas')
+    const hasWebgl = !!(canvas.getContext('webgl') || canvas.getContext('experimental-webgl'))
+    setSystemChecks({
+      secureContext: !!window.isSecureContext,
+      mediaDevices: !!navigator.mediaDevices,
+      getUserMedia: !!navigator.mediaDevices?.getUserMedia,
+      webgl: hasWebgl
+    })
+
     return () => {
       abortRef.current = true
       stopCamera()
@@ -200,92 +108,135 @@ const AgeVerificationModal = ({ channelName, onClose, onVerified }) => {
     }
   }, [])
 
+  useEffect(() => {
+    document.body.classList.add('age-verification-modal-open')
+    return () => {
+      document.body.classList.remove('age-verification-modal-open')
+    }
+  }, [])
+
+  const goToPage = (page) => {
+    setSlideDir(page > wizardPage ? 'forward' : 'back')
+    setWizardPage(page)
+  }
+
+  const loadAgeContext = async () => {
+    setPolicyLoading(true)
+    try {
+      const response = await apiService.getAgeVerificationStatus()
+      setJurisdictions(Array.isArray(response.data?.jurisdictions) ? response.data.jurisdictions : [])
+      setSelectedJurisdictionCode(response.data?.jurisdictionCode || response.data?.ageVerification?.jurisdictionCode || 'GLOBAL')
+    } catch {
+      setError('Failed to load age-verification policy. Please refresh and try again.')
+    } finally {
+      setPolicyLoading(false)
+    }
+  }
+
+  const selectedJurisdiction = jurisdictions.find(item => item.code === selectedJurisdictionCode) || null
+
   const loadModels = async () => {
     try {
-      console.log('[AgeVerification] Starting to load models from:', MODEL_URL)
-      
-      // Add timeout for model loading
       const modelLoadPromise = Promise.all([
         faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
         faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-        faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL),
+        faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL)
       ])
-      
-      const timeoutPromise = new Promise((_, reject) => 
+      const timeoutPromise = new Promise((_, reject) => {
         setTimeout(() => reject(new Error('Model loading timed out')), 60000)
-      )
-      
+      })
+
       await Promise.race([modelLoadPromise, timeoutPromise])
       modelsLoadedRef.current = true
-      console.log('[AgeVerification] Models loaded successfully')
       setModelsReady(true)
     } catch (err) {
-      console.error('[AgeVerification] Failed to load models:', err)
-      setError('Failed to load AI models. Please refresh and try again. If the issue persists, your browser may not be supported.')
-      // Still set modelsReady to allow the user to at least close the modal
+      setError('Failed to load local age-estimation models. Please refresh and try again.')
       setModelsReady(true)
     }
   }
 
-  const loadRecognitionModel = async () => {
-    if (recognitionLoadedRef.current) return
-    
+  const handleJurisdictionChange = async (nextCode) => {
+    setSelectedJurisdictionCode(nextCode)
+    setPolicyUpdating(true)
+    setError('')
     try {
-      // Add timeout for recognition model loading
-      const modelLoadPromise = Promise.all([
-        faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-      ])
-      
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Recognition model loading timed out')), 60000)
-      )
-      
-      await Promise.race([modelLoadPromise, timeoutPromise])
-      recognitionLoadedRef.current = true
-    } catch (err) {
-      console.error('[AgeVerification] Failed to load recognition model:', err)
-      throw err
+      const response = await apiService.setAgeVerificationJurisdiction(nextCode)
+      setJurisdictions(Array.isArray(response.data?.jurisdictions) ? response.data.jurisdictions : jurisdictions)
+      setSelectedJurisdictionCode(response.data?.jurisdictionCode || nextCode)
+    } catch {
+      setError('Could not save your location policy. Please try again.')
+    } finally {
+      setPolicyUpdating(false)
     }
   }
 
-  // ── Camera ──
+  const handleSelfAttest = async () => {
+    if (selectedJurisdiction?.requiresProofVerification) return
+    setPhase('submitting')
+    setStatus('Saving your 18+ self-attestation...')
+    setError('')
 
-  const startCamera = async (facingMode = 'user') => {
     try {
-      console.log('[AgeVerification] Starting camera, facingMode:', facingMode)
+      const response = await apiService.selfAttestAgeVerification({ device: 'web' })
+      setResult({
+        mode: 'self_attestation',
+        jurisdictionName: selectedJurisdiction?.label || 'Selected jurisdiction'
+      })
+      setFinalVerdict('pass')
+      setPhase('pass')
+      goToPage(3)
+      onVerified?.(response.data?.ageVerification)
+    } catch (err) {
+      setFinalVerdict('inconclusive')
+      setPhase('error')
+      setError(err?.response?.data?.error || 'Self-attestation could not be saved. Please retry or use full verification.')
+      goToPage(3)
+    }
+  }
+
+  const startCamera = async () => {
+    try {
       stopCamera()
       abortRef.current = false
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode, width: { ideal: 640 }, height: { ideal: 480 } }
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }
       })
-      console.log('[AgeVerification] Camera stream obtained:', stream.id)
       streamRef.current = stream
       if (videoRef.current) {
         videoRef.current.srcObject = stream
         await new Promise((resolve) => {
           videoRef.current.onloadedmetadata = () => {
-            console.log('[AgeVerification] Video metadata loaded, videoWidth:', videoRef.current.videoWidth)
             videoRef.current.play()
             resolve()
           }
         })
       }
-    } catch (err) {
-      console.error('[AgeVerification] Camera error:', err)
+      return true
+    } catch {
       setPhase('camera-denied')
-      setStatus('Camera access denied. Please allow camera access and try again.')
+      setStatus('Camera access was denied. Please allow camera access and retry.')
+      return false
     }
   }
 
   const stopCamera = () => {
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop())
+      streamRef.current.getTracks().forEach(track => track.stop())
       streamRef.current = null
     }
   }
 
-  // ── Image quality helpers ──
+  const getImageData = () => {
+    const video = videoRef.current
+    const canvas = canvasRef.current
+    if (!video || !canvas || !video.videoWidth || !video.videoHeight) return null
+
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(video, 0, 0)
+    return ctx.getImageData(0, 0, canvas.width, canvas.height)
+  }
 
   const computeSharpness = (imageData) => {
     const gray = new Float32Array(imageData.width * imageData.height)
@@ -293,8 +244,10 @@ const AgeVerificationModal = ({ channelName, onClose, onVerified }) => {
     for (let i = 0; i < gray.length; i++) {
       gray[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2]
     }
+
     let lapSum = 0
-    const w = imageData.width, h = imageData.height
+    const w = imageData.width
+    const h = imageData.height
     for (let y = 1; y < h - 1; y++) {
       for (let x = 1; x < w - 1; x++) {
         const idx = y * w + x
@@ -302,6 +255,7 @@ const AgeVerificationModal = ({ channelName, onClose, onVerified }) => {
         lapSum += lap * lap
       }
     }
+
     return lapSum / ((w - 2) * (h - 2))
   }
 
@@ -309,714 +263,505 @@ const AgeVerificationModal = ({ channelName, onClose, onVerified }) => {
     const d = imageData.data
     let sum = 0
     const count = d.length / 4
-    for (let i = 0; i < d.length; i += 4) sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+    for (let i = 0; i < d.length; i += 4) {
+      sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+    }
     const mean = sum / count
     return mean > 40 && mean < 220
   }
 
-  const checkFaceQuality = (detection, videoWidth, videoHeight, imageData) => {
+  const checkFaceQuality = (detection, videoWidth, imageData) => {
     const box = detection.detection.box
-    if (box.width / videoWidth < MIN_FACE_RATIO) return 'Move closer - face too small'
+    if (box.width / videoWidth < MIN_FACE_RATIO) return 'Move closer so your face fills more of the frame.'
+
     const landmarks = detection.landmarks
     if (landmarks) {
-      const jaw = landmarks.getJawOutline(), nose = landmarks.getNose()
-      if (jaw.length > 0 && nose.length > 0) {
-        const jawCenter = (jaw[0].x + jaw[jaw.length - 1].x) / 2
-        const jawWidth = jaw[jaw.length - 1].x - jaw[0].x
-        if (Math.abs(nose[nose.length - 1].x - jawCenter) / jawWidth > 0.2) return 'Face the camera directly'
-        const le = landmarks.getLeftEye(), re = landmarks.getRightEye()
-        if (le.length > 0 && re.length > 0) {
-          const roll = Math.abs(Math.atan2(re[3].y - le[0].y, re[3].x - le[0].x) * 180 / Math.PI)
-          if (roll > MAX_YAW_DEGREES * 1.5) return 'Keep your head level'
-        }
+      const leftEye = landmarks.getLeftEye()
+      const rightEye = landmarks.getRightEye()
+      if (leftEye.length > 0 && rightEye.length > 0) {
+        const roll = Math.abs(Math.atan2(rightEye[3].y - leftEye[0].y, rightEye[3].x - leftEye[0].x) * 180 / Math.PI)
+        if (roll > MAX_ROLL_DEGREES) return 'Keep your head level and face the camera.'
       }
     }
-    if (computeSharpness(imageData) < SHARPNESS_THRESHOLD * 0.8) return 'Image too blurry - hold still'
-    if (!checkExposure(imageData)) return 'Adjust lighting - too dark or too bright'
+
+    if (computeSharpness(imageData) < SHARPNESS_THRESHOLD) return 'Image is blurry. Hold still for a moment.'
+    if (!checkExposure(imageData)) return 'Lighting is not ideal. Improve light on your face.'
     return null
   }
 
   const drawFaceOverlay = (detection, good = false) => {
-    const canvas = overlayCanvasRef.current, video = videoRef.current
+    const canvas = overlayCanvasRef.current
+    const video = videoRef.current
     if (!canvas || !video || !video.videoWidth) return
+
     const displaySize = { width: video.videoWidth, height: video.videoHeight }
     faceapi.matchDimensions(canvas, displaySize)
+
     const ctx = canvas.getContext('2d')
     ctx.clearRect(0, 0, canvas.width, canvas.height)
+
     const resized = faceapi.resizeResults(detection, displaySize)
     const box = resized.detection.box
-    ctx.strokeStyle = good ? '#22c55e' : '#60a5fa'
+
+    ctx.strokeStyle = good ? 'var(--volt-success)' : 'var(--volt-primary-light)'
     ctx.lineWidth = 2
     ctx.setLineDash([6, 4])
     ctx.strokeRect(box.x, box.y, box.width, box.height)
     ctx.setLineDash([])
-    if (resized.landmarks) {
-      ctx.fillStyle = '#60a5fa88'
-      for (const pt of resized.landmarks.positions) {
-        ctx.beginPath(); ctx.arc(pt.x, pt.y, 2, 0, Math.PI * 2); ctx.fill()
-      }
+  }
+
+  const pointDistance = (a, b) => Math.hypot((a?.x || 0) - (b?.x || 0), (a?.y || 0) - (b?.y || 0))
+
+  const computeEyeAspectRatio = (eyePoints = []) => {
+    if (!eyePoints || eyePoints.length < 6) return 1
+    const verticalA = pointDistance(eyePoints[1], eyePoints[5])
+    const verticalB = pointDistance(eyePoints[2], eyePoints[4])
+    const horizontal = pointDistance(eyePoints[0], eyePoints[3]) || 1
+    return (verticalA + verticalB) / (2 * horizontal)
+  }
+
+  const updateBlinkLiveness = (landmarks) => {
+    const leftEar = computeEyeAspectRatio(landmarks.getLeftEye())
+    const rightEar = computeEyeAspectRatio(landmarks.getRightEye())
+    const avgEar = (leftEar + rightEar) / 2
+    const eyesClosedNow = avgEar < ACTIVE_BLINK_THRESHOLD
+
+    if (!eyesClosedNow && livenessRef.current.eyesClosed) {
+      livenessRef.current.blinkCount += 1
     }
-  }
-
-  const getImageData = () => {
-    const video = videoRef.current, canvas = canvasRef.current
-    if (!video || !canvas || !video.videoWidth || !video.videoHeight) return null
-    canvas.width = video.videoWidth; canvas.height = video.videoHeight
-    const ctx = canvas.getContext('2d')
-    ctx.drawImage(video, 0, 0)
-    return ctx.getImageData(0, 0, canvas.width, canvas.height)
-  }
-
-  // ── FACE VERIFICATION FLOW ──
-
-  const startFaceVerification = async () => {
-    setMethod('face')
-    goToPage(3)
-    setPhase('face-quality')
-    setStatus('Position your face within the frame. Good lighting, face centered.')
-    setQualityIssue('')
-    setFaceDetected(false)
-    await new Promise(r => setTimeout(r, 50))
-    await startCamera('user')
-    runQualityCheckLoop()
-  }
-
-  const runQualityCheckLoop = async () => {
-    if (abortRef.current) return
-    const video = videoRef.current
-    if (!video || video.readyState < 2) { animFrameRef.current = requestAnimationFrame(runQualityCheckLoop); return }
-    try {
-      // Lower threshold to 0.3 for better face detection reliability
-      const det = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.3 })).withFaceLandmarks().withAgeAndGender()
-      if (det) {
-        const imgData = getImageData()
-        const issue = imgData ? checkFaceQuality(det, video.videoWidth, video.videoHeight, imgData) : null
-        setQualityIssue(issue || ''); setFaceDetected(!issue); drawFaceOverlay(det, !issue)
-        if (!issue) {
-          setStatus('Face detected. Hold still - starting scan...')
-          setTimeout(() => { if (!abortRef.current) startAgeEstimation() }, 500)
-          return
-        }
-      } else {
-        setFaceDetected(false); setQualityIssue('No face detected - look at the camera')
-        const c = overlayCanvasRef.current; if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height)
-      }
-    } catch (err) { console.error('Quality check error:', err) }
-    if (!abortRef.current && phaseRef.current !== 'scanning') animFrameRef.current = requestAnimationFrame(runQualityCheckLoop)
-  }
-
-  const startAgeEstimation = async () => {
-    setPhase('scanning'); setStatus('Scanning face - hold still...')
-    ageResultsRef.current = []; landmarkHistoryRef.current = []
-    const startTime = Date.now()
-    let frameCount = 0, validCount = 0
-
-    const captureLoop = async () => {
-      if (abortRef.current) return
-      if (Date.now() - startTime > CAPTURE_DURATION_MS || validCount >= TARGET_FRAMES) { 
-        console.log('[AgeVerification] Scan complete:', { frameCount, validCount, duration: Date.now() - startTime })
-        finishAgeEstimation(); return 
-      }
-      const video = videoRef.current
-      if (!video || video.readyState < 2) { 
-        animFrameRef.current = requestAnimationFrame(captureLoop); return 
-      }
-      try {
-        // Lower threshold to 0.3 for better detection during scanning
-        const det = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.3 })).withFaceLandmarks().withAgeAndGender()
-        frameCount++
-        if (det) {
-          drawFaceOverlay(det)
-          const imgData = getImageData()
-          const issue = imgData ? checkFaceQuality(det, video.videoWidth, video.videoHeight, imgData) : null
-          if (!issue) {
-            validCount++
-            ageResultsRef.current.push({ age: det.age, gender: det.gender, genderProbability: det.genderProbability, score: det.detection.score })
-            const lm = det.landmarks
-            if (lm) {
-              const nt = lm.getNose()[3]
-              landmarkHistoryRef.current.push({ x: nt.x, y: nt.y, t: Date.now() })
-            }
-          }
-          setProgress({ framesCollected: frameCount, totalTarget: TARGET_FRAMES, validFrames: validCount })
-        } else {
-          // No face detected this frame
-          setProgress({ framesCollected: frameCount, totalTarget: TARGET_FRAMES, validFrames: validCount })
-        }
-      } catch (err) { 
-        console.error('[AgeVerification] Scan frame error:', err.message) 
-      }
-      animFrameRef.current = requestAnimationFrame(captureLoop)
-    }
-    captureLoop()
+    livenessRef.current.eyesClosed = eyesClosedNow
   }
 
   const checkPassiveLiveness = () => {
     const h = landmarkHistoryRef.current
     if (h.length < LIVENESS_MIN_MOTION_FRAMES) return false
+
     let motionFrames = 0
     for (let i = 1; i < h.length; i++) {
-      if (Math.abs(h[i].x - h[i - 1].x) > LIVENESS_MOTION_THRESHOLD || Math.abs(h[i].y - h[i - 1].y) > LIVENESS_MOTION_THRESHOLD) motionFrames++
-    }
-    return motionFrames >= 2
-  }
-
-  const finishAgeEstimation = () => {
-    const ages = ageResultsRef.current
-    if (ages.length < MIN_VALID_FRAMES) {
-      setPhase('retry-needed'); setStatus(`Not enough valid frames (${ages.length}/${MIN_VALID_FRAMES}). Try again with better lighting.`); return
-    }
-    computeFaceVerdict(ages)
-  }
-
-  const computeFaceVerdict = (ages) => {
-    const vals = ages.map(a => a.age), n = vals.length
-    const mu = vals.reduce((s, v) => s + v, 0) / n
-    const sigma = Math.sqrt(vals.reduce((s, v) => s + (v - mu) ** 2, 0) / n)
-    const probOver18 = vals.filter(a => a >= AGE_THRESHOLD).length / n
-    const lb = mu - 2 * sigma, ub = mu + 2 * sigma
-
-    let verdict
-    if (probOver18 >= PASS_PROBABILITY && lb >= AGE_THRESHOLD + AGE_BUFFER) verdict = 'adult'
-    else if (probOver18 <= FAIL_PROBABILITY && ub <= AGE_THRESHOLD - AGE_BUFFER) verdict = 'child'
-    else if (probOver18 >= PASS_PROBABILITY || lb >= AGE_THRESHOLD) verdict = 'adult'
-    else if (probOver18 <= (1 - PASS_PROBABILITY) || ub <= AGE_THRESHOLD) verdict = 'child'
-    else verdict = 'uncertain'
-
-    const faceResult = {
-      verdict,
-      meanAge: Math.round(mu * 10) / 10,
-      stdDev: Math.round(sigma * 10) / 10,
-      probOver18: Math.round(probOver18 * 1000) / 1000,
-      lowerBound: Math.round(lb * 10) / 10,
-      upperBound: Math.round(ub * 10) / 10,
-      validFrames: n,
-      passiveMotion: checkPassiveLiveness(),
-      liveness: { passive: checkPassiveLiveness(), passed: checkPassiveLiveness() },
-      modelVersion: 'face-api-vladmandic-1.7'
-    }
-
-    faceProofRef.current = faceResult
-    setResult(faceResult)
-
-    if (method === 'face') {
-      if (verdict === 'adult') { setPhase('pass'); setFinalVerdict('pass'); goToPage(4); submitFinalVerification('face', faceResult, null) }
-      else if (verdict === 'child') { setPhase('fail'); setFinalVerdict('fail'); goToPage(4); submitFinalVerification('face', faceResult, null) }
-      else { setPhase('retry-needed'); setStatus('Could not determine age with confidence. Try ID verification or retry.') }
-    } else if (method === 'hybrid') {
-      if (verdict === 'adult') {
-        setPhase('pass'); setFinalVerdict('pass'); goToPage(4)
-        submitFinalVerification('hybrid', faceResult, idResult)
-      } else {
-        captureLiveFaceDescriptor()
-        setPhase('id-prompt'); setStatus('Face scan inconclusive. Please provide an ID document to complete hybrid verification.')
+      if (
+        Math.abs(h[i].x - h[i - 1].x) > LIVENESS_MOTION_THRESHOLD ||
+        Math.abs(h[i].y - h[i - 1].y) > LIVENESS_MOTION_THRESHOLD
+      ) {
+        motionFrames++
       }
     }
+
+    return motionFrames >= LIVENESS_MIN_MOTION_FRAMES - 1
   }
 
-  const captureLiveFaceDescriptor = async () => {
-    try {
-      await loadRecognitionModel()
-      const video = videoRef.current
-      if (!video) return
-      const det = await faceapi.detectSingleFace(video, new faceapi.SsdMobilenetv1Options()).withFaceLandmarks().withFaceDescriptor()
-      if (det) liveFaceDescriptorRef.current = det.descriptor
-    } catch (err) { console.error('Failed to capture live face descriptor:', err) }
-  }
-
-  // ── ID VERIFICATION FLOW ──
-
-  const startIdVerification = async () => {
-    if (method !== 'hybrid') setMethod('id')
-    goToPage(3)
-    setIdDocCaptured(false); setIdResult(null)
-    if (method !== 'hybrid') {
-      setPhase('id-live-face')
-      setStatus('First, we need a live face scan for face matching. Look at the camera.')
-      setIdPhase('capture'); setIdStatus('Capture or upload a photo of your ID document (front side).')
-      await new Promise(r => setTimeout(r, 50))
-      await startCamera('user')
-      await captureLiveFaceForId()
-    } else {
-      setIdPhase('capture'); setIdStatus('Capture or upload a photo of your ID document (front side).')
-    }
-  }
-
-  const captureLiveFaceForId = async () => {
-    try {
-      await loadRecognitionModel()
-      setPhase('id-live-face'); setStatus('Detecting your live face for ID matching...')
-      const waitForFace = async () => {
-        if (abortRef.current) return
-        const video = videoRef.current
-        if (!video || video.readyState < 2) { animFrameRef.current = requestAnimationFrame(waitForFace); return }
-        try {
-          const det = await faceapi.detectSingleFace(video, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 })).withFaceLandmarks().withFaceDescriptor()
-          if (det) {
-            drawFaceOverlay(det)
-            liveFaceDescriptorRef.current = det.descriptor
-            setStatus('Live face captured. Now provide your ID document.')
-            stopCamera()
-            setIdPhase('capture')
-            setPhase('id-capture')
-            setIdStatus('Upload a photo of your ID document (front side with MRZ or date of birth visible).')
-          } else {
-            console.log('[AgeVerification] ID live face: No face detected, retrying...')
-            animFrameRef.current = requestAnimationFrame(waitForFace)
-          }
-        } catch (err) {
-          console.error('[AgeVerification] ID live face detection error:', err)
-          animFrameRef.current = requestAnimationFrame(waitForFace)
-        }
-      }
-      waitForFace()
-    } catch (err) {
-      console.error('Live face capture failed:', err); setError('Could not detect face. Please retry.')
-    }
-  }
-
-  const handleIdFileUpload = async (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setIdPhase('processing'); setIdStatus('Processing ID document locally... This may take a moment.')
-    setPhase('id-processing')
-    setStatus('Running local OCR and document checks. No data leaves your device.')
-
-    try {
-      const img = await loadImageFromFile(file)
-      const idCanvas = idCanvasRef.current || document.createElement('canvas')
-      idCanvas.width = img.width; idCanvas.height = img.height
-      const ctx = idCanvas.getContext('2d')
-      ctx.drawImage(img, 0, 0)
-
-      const imgData = ctx.getImageData(0, 0, img.width, img.height)
-      const docSharpness = computeSharpness(imgData)
-      const docExposure = checkExposure(imgData)
-      if (docSharpness < 30) { setIdStatus('Document image is too blurry. Please retake.'); setIdPhase('capture'); setPhase('id-capture'); return }
-      if (!docExposure) { setIdStatus('Document image has poor lighting. Please retake.'); setIdPhase('capture'); setPhase('id-capture'); return }
-
-      setIdStatus('Running local OCR (Tesseract.js)...')
-      
-      // Add timeout for tesseract worker to prevent hanging
-      const workerPromise = createWorker('eng')
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Tesseract initialization timed out')), 30000)
-      )
-      
-      let worker
-      try {
-        worker = await Promise.race([workerPromise, timeoutPromise])
-      } catch (err) {
-        console.error('[AgeVerification] Tesseract worker failed to initialize:', err)
-        setIdStatus('OCR initialization failed. Please try a different verification method.')
-        setIdPhase('capture')
-        setPhase('id-capture')
-        return
-      }
-      
-      const { data } = await worker.recognize(img)
-      await worker.terminate()
-
-      const fullText = data.text || ''
-      const lines = fullText.split('\n').map(l => l.trim()).filter(l => l.length > 5)
-
-      const mrzLines = lines.filter(l => /^[A-Z0-9<]{20,}$/.test(l.replace(/\s/g, '')))
-      let mrzResult = null
-      if (mrzLines.length >= 2) mrzResult = parseMrzLines(mrzLines)
-
-      const detectedDocType = mrzResult?.docType || detectDocType(fullText)
-      let dobResult = null
-      if (!mrzResult?.dob) dobResult = extractDobFromText(fullText)
-
-      const dob = mrzResult?.dob || dobResult?.dob || null
-      const ageOver18 = mrzResult?.ageOver18 || dobResult?.ageOver18 || false
-
-      await loadRecognitionModel()
-      let faceMatchResult = { similarity: 0, threshold: FACE_MATCH_THRESHOLD, passed: false }
-      try {
-        const idFace = await faceapi.detectSingleFace(img, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 })).withFaceLandmarks().withFaceDescriptor()
-        if (idFace && liveFaceDescriptorRef.current) {
-          const distance = faceapi.euclideanDistance(liveFaceDescriptorRef.current, idFace.descriptor)
-          const similarity = Math.round((1 - distance) * 100) / 100
-          faceMatchResult = { similarity, threshold: FACE_MATCH_THRESHOLD, passed: similarity >= FACE_MATCH_THRESHOLD }
-        }
-      } catch (err) { console.error('Face match error:', err) }
-
-      const tamperLikely = docSharpness < 40 && !docExposure
-
-      const idVerificationResult = {
-        docType: detectedDocType,
-        country: mrzResult?.country || null,
-        dob,
-        ageOver18,
-        docAuthenticity: {
-          mrzValid: mrzResult?.mrzValid || false,
-          checksumValid: mrzResult?.checksumValid || false,
-          layoutValid: mrzResult?.layoutValid || (detectedDocType !== 'unknown'),
-          tamperLikely
-        },
-        faceMatch: faceMatchResult,
-        extractedBy: 'tesseract-js-local',
-        verifiedAt: new Date().toISOString()
-      }
-
-      setIdResult(idVerificationResult)
-      setIdDocCaptured(true)
-
-      const idValid = (idVerificationResult.docAuthenticity.mrzValid || idVerificationResult.docAuthenticity.layoutValid) && !tamperLikely
-      const faceMatchPassed = faceMatchResult.passed
-      const idPassed = idValid && faceMatchPassed && ageOver18
-
-      if (method === 'id') {
-        if (idPassed) {
-          setPhase('pass'); setFinalVerdict('pass'); setIdPhase('done'); goToPage(4)
-          submitFinalVerification('id', faceProofRef.current, idVerificationResult)
-        } else {
-          const reasons = []
-          if (!idValid) reasons.push('document authenticity check failed')
-          if (!faceMatchPassed) reasons.push('face on ID does not match your live face')
-          if (!ageOver18) reasons.push('date of birth indicates under 18')
-          if (!dob) reasons.push('could not extract date of birth from document')
-          setPhase('fail'); setFinalVerdict('fail'); setStatus(`ID verification failed: ${reasons.join('; ')}.`); setIdPhase('done'); goToPage(4)
-          submitFinalVerification('id', null, idVerificationResult)
-        }
-      } else if (method === 'hybrid') {
-        if (idPassed) {
-          setPhase('pass'); setFinalVerdict('pass'); setIdPhase('done'); goToPage(4)
-          submitFinalVerification('hybrid', faceProofRef.current, idVerificationResult)
-        } else {
-          const reasons = []
-          if (!idValid) reasons.push('document check failed')
-          if (!faceMatchPassed) reasons.push('face mismatch')
-          if (!ageOver18) reasons.push('DOB indicates under 18')
-          if (!dob) reasons.push('no DOB found')
-          setPhase('fail'); setFinalVerdict('fail'); setStatus(`Hybrid verification failed: ${reasons.join('; ')}.`); setIdPhase('done'); goToPage(4)
-          submitFinalVerification('hybrid', faceProofRef.current, idVerificationResult)
-        }
-      }
-
-      URL.revokeObjectURL(img.src)
-    } catch (err) {
-      console.error('ID processing error:', err)
-      setError('Failed to process document. Please try again with a clearer image.')
-      setIdPhase('capture'); setPhase('id-capture')
-    }
-  }
-
-  const loadImageFromFile = (file) => {
-    return new Promise((resolve, reject) => {
-      const img = new Image()
-      img.onload = () => resolve(img)
-      img.onerror = reject
-      img.src = URL.createObjectURL(file)
-    })
-  }
-
-  // ── HYBRID FLOW ──
-
-  const startHybridVerification = async () => {
-    setMethod('hybrid')
-    goToPage(3)
+  const startLocalVerification = async () => {
+    resetRuntimeState()
+    goToPage(2)
     setPhase('face-quality')
-    setStatus('Hybrid mode: Loading recognition models...')
-    setQualityIssue('')
-    setFaceDetected(false)
-    await loadRecognitionModel()
-    setStatus('Hybrid mode: Starting with face scan. Position your face within the frame.')
-    await new Promise(r => setTimeout(r, 50))
-    await startCamera('user')
+    setStatus('Position your face in frame. Blink twice when prompted.')
+
+    const cameraReady = await startCamera()
+    if (!cameraReady) return
+
     runQualityCheckLoop()
   }
 
-  // ── SUBMIT ──
+  const runQualityCheckLoop = async () => {
+    if (abortRef.current) return
 
-  const submitFinalVerification = async (verificationMethod, faceData, idData) => {
-    const category = determineFinalCategory(verificationMethod, faceData, idData)
+    const video = videoRef.current
+    if (!video || video.readyState < 2) {
+      animFrameRef.current = requestAnimationFrame(runQualityCheckLoop)
+      return
+    }
+
     try {
-      const proofHash = await hashProof({ method: verificationMethod, face: faceData, id: idData, ts: Date.now() })
-      const proofSummary = { method: verificationMethod, proofHash }
+      const detection = await faceapi
+        .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.3 }))
+        .withFaceLandmarks()
+        .withAgeAndGender()
 
-      if (faceData) {
-        proofSummary.face_meanAge = faceData.meanAge
-        proofSummary.face_stdDev = faceData.stdDev
-        proofSummary.face_probOver18 = faceData.probOver18
-        proofSummary.face_validFrames = faceData.validFrames
-        proofSummary.face_lowerBound = faceData.lowerBound
-        proofSummary.face_upperBound = faceData.upperBound
-        proofSummary.face_passiveMotion = faceData.passiveMotion
-        proofSummary.face_liveness_passed = faceData.liveness?.passed || false
-        proofSummary.face_modelVersion = faceData.modelVersion
-        proofSummary.face_verdict = faceData.verdict
+      if (!detection) {
+        qualityStableCountRef.current = 0
+        setFaceDetected(false)
+        setQualityIssue('No face detected. Look directly at the camera.')
+        const c = overlayCanvasRef.current
+        if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height)
+        animFrameRef.current = requestAnimationFrame(runQualityCheckLoop)
+        return
       }
 
-      if (idData) {
-        proofSummary.id_docType = idData.docType
-        proofSummary.id_country = idData.country || ''
-        proofSummary.id_dob = idData.dob || ''
-        proofSummary.id_ageOver18 = idData.ageOver18
-        proofSummary.id_mrzValid = idData.docAuthenticity?.mrzValid || false
-        proofSummary.id_checksumValid = idData.docAuthenticity?.checksumValid || false
-        proofSummary.id_layoutValid = idData.docAuthenticity?.layoutValid || false
-        proofSummary.id_tamperLikely = idData.docAuthenticity?.tamperLikely || false
-        proofSummary.id_faceMatch_similarity = idData.faceMatch?.similarity || 0
-        proofSummary.id_faceMatch_passed = idData.faceMatch?.passed || false
-        proofSummary.id_extractedBy = idData.extractedBy
+      const imageData = getImageData()
+      const issue = imageData ? checkFaceQuality(detection, video.videoWidth, imageData) : 'Waiting for camera frame...'
+
+      setFaceDetected(!issue)
+      setQualityIssue(issue || '')
+      drawFaceOverlay(detection, !issue)
+
+      if (issue) {
+        qualityStableCountRef.current = 0
+        animFrameRef.current = requestAnimationFrame(runQualityCheckLoop)
+        return
       }
 
-      proofSummary.decision_passed = category === 'adult'
-      proofSummary.decision_threshold = AGE_THRESHOLD
-      proofSummary.decision_retries = MAX_RETRIES - retriesLeft
+      qualityStableCountRef.current += 1
+      setStatus('Face quality is good. Hold still, then blink twice.')
 
-      const estimatedAge = faceData?.meanAge ? Math.round(faceData.meanAge) : (idData?.ageOver18 ? 18 : 13)
+      if (qualityStableCountRef.current >= 10) {
+        startAgeEstimation()
+        return
+      }
+    } catch {
+      setQualityIssue('Face detection had a temporary issue. Retrying...')
+    }
 
-      const response = await apiService.submitAgeVerification({
-        method: verificationMethod,
-        proofSummary,
-        category,
-        estimatedAge,
-        device: { userAgent: navigator.userAgent, locale: navigator.language }
-      })
+    if (!abortRef.current && phaseRef.current === 'face-quality') {
+      animFrameRef.current = requestAnimationFrame(runQualityCheckLoop)
+    }
+  }
+
+  const startAgeEstimation = () => {
+    setPhase('scanning')
+    setStatus('Scanning now. Please blink twice naturally.')
+
+    ageResultsRef.current = []
+    landmarkHistoryRef.current = []
+    livenessRef.current = { blinkCount: 0, eyesClosed: false }
+
+    const startedAt = Date.now()
+    let framesCollected = 0
+    let validFrames = 0
+
+    const captureLoop = async () => {
+      if (abortRef.current) return
+
+      if (Date.now() - startedAt > CAPTURE_DURATION_MS || validFrames >= TARGET_FRAMES) {
+        finishAgeEstimation()
+        return
+      }
+
+      const video = videoRef.current
+      if (!video || video.readyState < 2) {
+        animFrameRef.current = requestAnimationFrame(captureLoop)
+        return
+      }
+
+      try {
+        const detection = await faceapi
+          .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.3 }))
+          .withFaceLandmarks()
+          .withAgeAndGender()
+
+        framesCollected++
+
+        if (detection) {
+          drawFaceOverlay(detection)
+
+          const imageData = getImageData()
+          const issue = imageData ? checkFaceQuality(detection, video.videoWidth, imageData) : null
+          if (!issue) {
+            validFrames++
+            ageResultsRef.current.push(detection.age)
+
+            const nose = detection.landmarks.getNose()[3]
+            landmarkHistoryRef.current.push({ x: nose.x, y: nose.y })
+            updateBlinkLiveness(detection.landmarks)
+          }
+        }
+
+        setProgress({ framesCollected, validFrames, targetFrames: TARGET_FRAMES })
+      } catch {
+        // Continue scanning; transient model errors can happen.
+      }
+
+      animFrameRef.current = requestAnimationFrame(captureLoop)
+    }
+
+    captureLoop()
+  }
+
+  const finishAgeEstimation = async () => {
+    const ages = ageResultsRef.current
+
+    if (ages.length < MIN_VALID_FRAMES) {
+      setFinalVerdict('inconclusive')
+      setPhase('inconclusive')
+      setStatus(`Not enough valid frames (${ages.length}/${MIN_VALID_FRAMES}). Retry with better lighting.`)
+      goToPage(3)
       stopCamera()
+      return
+    }
+
+    const n = ages.length
+    const probabilityOverThreshold = ages.filter(age => age >= AGE_THRESHOLD).length / n
+
+    const passiveMotion = checkPassiveLiveness()
+    const activeBlinkPassed = livenessRef.current.blinkCount >= ACTIVE_BLINK_MIN_COUNT
+    const livenessPassed = passiveMotion && activeBlinkPassed
+
+    let verdict = 'inconclusive'
+    if (livenessPassed && probabilityOverThreshold >= PASS_PROBABILITY) verdict = 'adult'
+    else if (!livenessPassed || probabilityOverThreshold <= FAIL_PROBABILITY) verdict = 'child'
+
+    const confidence = verdict === 'adult'
+      ? probabilityOverThreshold
+      : verdict === 'child'
+        ? 1 - probabilityOverThreshold
+        : Math.abs(probabilityOverThreshold - 0.5) * 2
+
+    const localResult = {
+      verdict,
+      confidence: Math.round(confidence * 1000) / 1000,
+      probabilityOverThreshold: Math.round(probabilityOverThreshold * 1000) / 1000,
+      validFrames: n,
+      liveness: {
+        passiveMotion,
+        blinkCount: livenessRef.current.blinkCount,
+        passed: livenessPassed
+      },
+      policy: {
+        threshold: AGE_THRESHOLD,
+        passProbability: PASS_PROBABILITY,
+        failProbability: FAIL_PROBABILITY
+      },
+      modelVersion: 'face-api-vladmandic-1.7'
+    }
+
+    setResult(localResult)
+    stopCamera()
+
+    if (verdict === 'inconclusive') {
+      setFinalVerdict('inconclusive')
+      setPhase('inconclusive')
+      setStatus('Result was inconclusive. Retry or use an alternative verification path.')
+      goToPage(3)
+      return
+    }
+
+    setPhase('submitting')
+    setStatus('Finalizing verification...')
+
+    try {
+      const category = verdict === 'adult' ? 'adult' : 'child'
+      const response = await apiService.submitAgeVerification({
+        method: 'face',
+        category,
+        jurisdictionCode: selectedJurisdictionCode,
+        proofSummary: {
+          decision: {
+            passed: verdict === 'adult',
+            confidence: localResult.confidence,
+            probabilityOverThreshold: localResult.probabilityOverThreshold,
+            threshold: AGE_THRESHOLD,
+            passProbability: PASS_PROBABILITY,
+            failProbability: FAIL_PROBABILITY
+          },
+          liveness: {
+            passed: localResult.liveness.passed,
+            passiveMotion: localResult.liveness.passiveMotion,
+            blinkCount: localResult.liveness.blinkCount
+          },
+          meta: {
+            validFrames: localResult.validFrames,
+            modelVersion: localResult.modelVersion,
+            retriesUsed: MAX_RETRIES - retriesLeft
+          }
+        }
+      })
+
+      setFinalVerdict(verdict === 'adult' ? 'pass' : 'fail')
+      setPhase(verdict === 'adult' ? 'pass' : 'fail')
+      goToPage(3)
       onVerified?.(response.data?.ageVerification)
-    } catch (err) {
-      console.error('Verification submit failed:', err)
-      setError(err?.response?.data?.error || 'Verification submission failed.')
+    } catch {
+      setFinalVerdict('inconclusive')
       setPhase('error')
+      setError('Verification result could not be saved. Please retry.')
+      goToPage(3)
     }
   }
 
-  const determineFinalCategory = (verificationMethod, faceData, idData) => {
-    if (verificationMethod === 'face') return faceData?.verdict === 'adult' ? 'adult' : 'child'
-    if (verificationMethod === 'id') {
-      const idValid = idData && (idData.docAuthenticity?.mrzValid || idData.docAuthenticity?.layoutValid) && !idData.docAuthenticity?.tamperLikely
-      return (idValid && idData?.faceMatch?.passed && idData?.ageOver18) ? 'adult' : 'child'
-    }
-    if (verificationMethod === 'hybrid') {
-      if (faceData?.verdict === 'adult') return 'adult'
-      const idValid = idData && (idData.docAuthenticity?.mrzValid || idData.docAuthenticity?.layoutValid) && !idData.docAuthenticity?.tamperLikely
-      if (idValid && idData?.faceMatch?.passed && idData?.ageOver18) return 'adult'
-      return 'child'
-    }
-    return 'child'
-  }
+  const resetRuntimeState = () => {
+    setError('')
+    setStatus('')
+    setQualityIssue('')
+    setFaceDetected(false)
+    setResult(null)
+    setFinalVerdict(null)
+    setProgress({ framesCollected: 0, validFrames: 0, targetFrames: TARGET_FRAMES })
 
-  const hashProof = async (data) => {
-    const text = JSON.stringify(data)
-    const buf = new TextEncoder().encode(text)
-    const digest = await crypto.subtle.digest('SHA-256', buf)
-    return btoa(String.fromCharCode(...new Uint8Array(digest)))
-  }
+    qualityStableCountRef.current = 0
+    ageResultsRef.current = []
+    landmarkHistoryRef.current = []
+    livenessRef.current = { blinkCount: 0, eyesClosed: false }
 
-  // ── RETRY / CLOSE ──
+    abortRef.current = false
+    cancelAnimationFrame(animFrameRef.current)
+  }
 
   const handleRetry = () => {
     if (retriesLeft <= 0) return
-    setRetriesLeft(r => r - 1)
-    resetState()
-    goToPage(2)
-  }
-
-  const resetState = () => {
-    setMethod(null); setResult(null); setError(''); setQualityIssue(''); setFinalVerdict(null)
-    setPhase('idle'); setStatus('')
-    setProgress({ framesCollected: 0, totalTarget: TARGET_FRAMES, validFrames: 0 })
-    setIdPhase(null); setIdStatus(''); setIdResult(null); setIdDocCaptured(false)
-    ageResultsRef.current = []; landmarkHistoryRef.current = []
-    faceProofRef.current = null; liveFaceDescriptorRef.current = null
-    abortRef.current = true; cancelAnimationFrame(animFrameRef.current); stopCamera()
-    setTimeout(() => { abortRef.current = false }, 100)
+    setRetriesLeft(prev => prev - 1)
+    resetRuntimeState()
+    startLocalVerification()
   }
 
   const closeModal = () => {
-    abortRef.current = true; stopCamera(); cancelAnimationFrame(animFrameRef.current); onClose?.()
+    abortRef.current = true
+    stopCamera()
+    cancelAnimationFrame(animFrameRef.current)
+    onClose?.()
   }
 
-  // ── UI HELPERS ──
-
-  const showVideoFeed = ['face-quality', 'scanning', 'id-live-face'].includes(phase)
-  const showIdUpload = ['id-capture', 'id-prompt'].includes(phase)
-  const canRetry = (phase === 'retry-needed' || phase === 'fail' || phase === 'error' || phase === 'camera-denied') && retriesLeft > 0
-  const verifying = ['face-quality', 'scanning', 'id-live-face', 'id-capture', 'id-processing', 'id-prompt'].includes(phase)
+  const canRetry = ['camera-denied', 'inconclusive', 'error'].includes(phase) && retriesLeft > 0
+  const showVideoFeed = ['face-quality', 'scanning'].includes(phase)
   const currentPageName = PAGES[wizardPage]
 
   const renderStepDots = () => (
     <div className="wizard-steps">
       {PAGES.map((name, i) => (
         <div key={name} className={`wizard-dot ${i === wizardPage ? 'active' : ''} ${i < wizardPage ? 'done' : ''}`}>
-          <div className="dot-circle">{i < wizardPage ? <CheckCircle size={14} /> : i + 1}</div>
-          <span className="dot-label">{[t('ageVerification.welcome'), t('ageVerification.info'), t('ageVerification.method'), t('ageVerification.verify'), t('ageVerification.result'), t('ageVerification.done')][i]}</span>
+          <div className="dot-circle">{i < wizardPage ? <CheckCircleIcon size={14} /> : i + 1}</div>
+          <span className="dot-label">{[t('ageVerification.welcome'), t('ageVerification.info'), t('ageVerification.verify'), t('ageVerification.result'), t('ageVerification.done')][i]}</span>
         </div>
       ))}
     </div>
   )
 
-  // ── PAGE: Welcome ──
   const renderWelcome = () => (
     <div className="wizard-page welcome-page">
-      <div className="welcome-icon"><ShieldAlert size={48} /></div>
+      <div className="welcome-icon"><ShieldExclamationIcon size={48} /></div>
       <h2>{t('ageVerification.title', 'Age Verification Required')}</h2>
       <p className="welcome-subtitle">
         {t('ageVerification.channelAccess', 'Access to #{{channel}} requires age verification.', { channel: channelName || 'this channel' })}
       </p>
+
       <div className="welcome-features">
         <div className="feature-item">
-          <Lock size={20} />
+          <LockClosedIcon size={20} />
           <div>
             <strong>{t('ageVerification.onDevice', '100% On-Device')}</strong>
             <span>{t('ageVerification.onDeviceDesc', 'Everything runs locally in your browser. Nothing is uploaded.')}</span>
           </div>
         </div>
         <div className="feature-item">
-          <Code size={20} />
+          <ShieldCheckIcon size={20} />
           <div>
-            <strong>{t('ageVerification.openSource', 'Open Source')}</strong>
-            <span>{t('ageVerification.openSourceDesc', 'Every line of code is auditable. No black boxes.')}</span>
-          </div>
-        </div>
-        <div className="feature-item">
-          <ShieldCheck size={20} />
-          <div>
-            <strong>{t('ageVerification.zeroThirdParty', 'Zero Third-Party Services')}</strong>
-            <span>{t('ageVerification.zeroThirdPartyDesc', 'No external APIs, SDKs, or cloud services involved. Period.')}</span>
+            <strong>{t('ageVerification.minimalOutput', 'Minimal Output')}</strong>
+            <span>{t('ageVerification.minimalOutputDesc', 'Only pass/fail and confidence are returned. No frames are stored.')}</span>
           </div>
         </div>
       </div>
+
+      <div className="policy-callout">
+        <div className="policy-callout-header">
+          <GlobeAltIcon size={18} />
+          <strong>Jurisdiction policy</strong>
+        </div>
+        {policyLoading ? (
+          <span>Loading jurisdiction requirements...</span>
+        ) : (
+          <>
+            <strong>{selectedJurisdiction?.label || 'Other / Not Listed'}</strong>
+            <span>{selectedJurisdiction?.summary || 'Choose the location policy that should apply to this account.'}</span>
+            <span className={`policy-pill ${selectedJurisdiction?.requiresProofVerification ? 'required' : 'optional'}`}>
+              {selectedJurisdiction?.requiresProofVerification ? 'Full verification required' : 'Self-attestation allowed'}
+            </span>
+          </>
+        )}
+      </div>
+
       {!modelsReady && (
         <div className="model-loading-inline">
           <div className="loading-spinner-small" />
           <span>{t('ageVerification.loadingModels', 'Loading AI models...')}</span>
         </div>
       )}
+
       <div className="wizard-nav">
         <div />
         <button className="btn btn-primary" onClick={() => goToPage(1)} disabled={!modelsReady}>
-          {t('ageVerification.getStarted', 'Get Started')} <ChevronRight size={16} />
+          {t('ageVerification.getStarted', 'Get Started')} <ChevronRightIcon size={16} />
         </button>
       </div>
     </div>
   )
 
-  // ── PAGE: Important Info ──
   const renderInfo = () => (
     <div className="wizard-page info-page">
       <h3>{t('ageVerification.beforeBegin', 'Before You Begin')}</h3>
-      <p className="info-lead">{t('ageVerification.infoLead', 'Here is what you need to know about this verification process.')}</p>
+      <p className="info-lead">{t('ageVerification.localOnlyInfo', 'This check runs entirely on-device with no image uploads.')}</p>
+
+      <div className="jurisdiction-panel">
+        <label htmlFor="age-jurisdiction-select">Location policy</label>
+        <select
+          id="age-jurisdiction-select"
+          className="jurisdiction-select"
+          value={selectedJurisdictionCode}
+          onChange={(e) => handleJurisdictionChange(e.target.value)}
+          disabled={policyLoading || policyUpdating}
+        >
+          {(jurisdictions.length > 0 ? jurisdictions : [{ code: 'GLOBAL', label: 'Other / Not Listed' }]).map((item) => (
+            <option key={item.code} value={item.code}>{item.label}</option>
+          ))}
+        </select>
+        {selectedJurisdiction && (
+          <div className={`jurisdiction-summary ${selectedJurisdiction.requiresProofVerification ? 'required' : 'optional'}`}>
+            <strong>{selectedJurisdiction.label}</strong>
+            <span>{selectedJurisdiction.summary}</span>
+            <span>
+              Policy status: {selectedJurisdiction.status}. Minimum age signal: {selectedJurisdiction.minimumAge}+.
+            </span>
+          </div>
+        )}
+      </div>
 
       <div className="info-grid">
         <div className="info-card">
-          <h4><Camera size={16} /> {t('ageVerification.howItWorks', 'How It Works')}</h4>
+          <h4><CameraIcon size={16} /> {t('ageVerification.howItWorks', 'How It Works')}</h4>
           <ul>
-            <li>{t('ageVerification.howItWorks1', 'AI models (TensorFlow.js) run directly in your browser')}</li>
-            <li>{t('ageVerification.howItWorks2', 'Camera feed is processed in-memory only')}</li>
-            <li>{t('ageVerification.howItWorks3', 'ID documents are scanned locally with Tesseract.js OCR')}</li>
-            <li>{t('ageVerification.howItWorks4', 'Face on ID is matched to your live face using local embeddings')}</li>
+            <li>{t('ageVerification.localHow1', 'Captures a short live camera stream in memory')}</li>
+            <li>{t('ageVerification.localHow2', 'Runs face detection, landmarks, age estimation on-device')}</li>
+            <li>{t('ageVerification.localHow3', 'Applies conservative pass/fail thresholds with liveness checks')}</li>
           </ul>
         </div>
+
         <div className="info-card">
-          <h4><ShieldCheck size={16} /> {t('ageVerification.privacyGuarantees', 'Privacy Guarantees')}</h4>
+          <h4><ShieldCheckIcon size={16} /> {t('ageVerification.privacyGuarantees', 'Privacy Guarantees')}</h4>
           <ul>
-            <li>{t('ageVerification.privacyGuarantees1', 'Zero images stored on disk or sent over the network')}</li>
-            <li>{t('ageVerification.privacyGuarantees2', 'No face embeddings or biometric templates persisted')}</li>
-            <li>{t('ageVerification.privacyGuarantees3', 'No analytics, session replay, or error logging')}</li>
-            <li>{t('ageVerification.privacyGuarantees4', 'No third-party SDKs, APIs, or cloud services')}</li>
+            <li>{t('ageVerification.localPrivacy1', 'No frames, photos, embeddings, or landmarks are persisted')}</li>
+            <li>{t('ageVerification.localPrivacy2', 'No third-party analytics on this screen')}</li>
+            <li>{t('ageVerification.localPrivacy3', 'Only pass/fail plus confidence is returned')}</li>
           </ul>
         </div>
+
         <div className="info-card">
-          <h4><Lock size={16} /> {t('ageVerification.whatWeStore', 'What We Store')}</h4>
+          <h4><ShieldCheckIcon size={16} /> {t('ageVerification.systemReadiness', 'System Readiness')}</h4>
           <ul>
-            <li>{t('ageVerification.whatWeStore1', 'Pass/fail verdict and a hashed proof transcript only')}</li>
-            <li>{t('ageVerification.whatWeStore2', 'OCR text discarded immediately after DOB extraction')}</li>
-            <li>{t('ageVerification.whatWeStore3', 'Face descriptors are in-memory only, garbage collected on close')}</li>
-          </ul>
-        </div>
-        <div className="info-card">
-          <h4><Eye size={16} /> {t('ageVerification.tipsBestResults', 'Tips for Best Results')}</h4>
-          <ul>
-            <li>{t('ageVerification.tipsBestResults1', 'Good, even lighting on your face')}</li>
-            <li>{t('ageVerification.tipsBestResults2', 'Remove hats, sunglasses, or masks')}</li>
-            <li>{t('ageVerification.tipsBestResults3', 'For ID: ensure MRZ zone or DOB is clearly visible')}</li>
-            <li>{t('ageVerification.tipsBestResults4', 'Blink naturally -- liveness checks detect frozen images')}</li>
+            <li>Secure context (HTTPS): {systemChecks.secureContext ? 'OK' : 'Missing'}</li>
+            <li>Media devices API: {systemChecks.mediaDevices ? 'OK' : 'Missing'}</li>
+            <li>Camera access API: {systemChecks.getUserMedia ? 'OK' : 'Missing'}</li>
+            <li>WebGL available: {systemChecks.webgl ? 'OK' : 'Limited'}</li>
           </ul>
         </div>
       </div>
 
       <div className="wizard-nav">
         <button className="btn btn-secondary" onClick={() => goToPage(0)}>
-          <ChevronLeft size={16} /> {t('common.back', 'Back')}
+          <ChevronLeftIcon size={16} /> {t('common.back', 'Back')}
         </button>
-        <button className="btn btn-primary" onClick={() => goToPage(2)} disabled={!modelsReady}>
-          {modelsReady ? <>{t('common.continue', 'Continue')} <ChevronRight size={16} /></> : <>{t('ageVerification.loadingModels', 'Loading models...')}</>}
-        </button>
-      </div>
-    </div>
-  )
-
-  // ── PAGE: Method Selection ──
-  const renderMethodSelect = () => (
-    <div className="wizard-page method-page">
-      <h3>{t('ageVerification.chooseMethod', 'Choose Verification Method')}</h3>
-      <p className="method-lead">{t('ageVerification.methodLead', 'Select how you would like to verify your age. All methods run entirely on your device.')}</p>
-      <div className="method-cards">
-        <button className="method-card" onClick={startFaceVerification}>
-          <Camera size={32} />
-          <strong>{t('ageVerification.faceScan', 'Face Scan')}</strong>
-          <span>{t('ageVerification.faceScanDesc', 'AI estimates your age from a live camera feed across 24 frames with blink liveness detection. Fastest option.')}</span>
-          <div className="method-tag">{t('ageVerification.seconds10', '~10 seconds')}</div>
-        </button>
-        <button className="method-card" onClick={startIdVerification}>
-          <FileText size={32} />
-          <strong>{t('ageVerification.idDocument', 'ID Document')}</strong>
-          <span>{t('ageVerification.idDocumentDesc', 'Scan your ID locally. OCR extracts date of birth, MRZ checksums are validated, and face is matched to you.')}</span>
-          <div className="method-tag">{t('ageVerification.seconds30', '~30 seconds')}</div>
-        </button>
-        <button className="method-card" onClick={startHybridVerification}>
-          <ScanLine size={32} />
-          <strong>{t('ageVerification.hybrid', 'Hybrid')}</strong>
-          <span>{t('ageVerification.hybridDesc', 'Face scan first. If the result is inconclusive, falls back to ID document. Most reliable approach.')}</span>
-          <div className="method-tag recommended">{t('ageVerification.recommended', 'Recommended')}</div>
-        </button>
-      </div>
-      <div className="wizard-nav">
-        <button className="btn btn-secondary" onClick={() => goToPage(1)}>
-          <ChevronLeft size={16} /> {t('common.back', 'Back')}
-        </button>
-        <div />
-      </div>
-    </div>
-  )
-
-  // ── PAGE: Verification In Progress ──
-  const renderVerification = () => (
-    <div className="wizard-page verify-page">
-      <canvas ref={idCanvasRef} className="hidden-canvas" aria-hidden="true" />
-
-      {showVideoFeed && (
-        <div className="video-shell">
-          <video ref={videoRef} autoPlay playsInline muted className="verification-video" />
-          <canvas ref={canvasRef} className="hidden-canvas" aria-hidden="true" />
-          <canvas ref={overlayCanvasRef} className="overlay-canvas" />
-        </div>
-      )}
-
-      {showIdUpload && (
-        <div className="id-upload-area">
-          <FileText size={40} className="id-icon" />
-          <p>{idStatus || t('ageVerification.uploadIdPrompt', 'Upload a clear photo of the front of your ID document.')}</p>
-          <input type="file" ref={fileInputRef} accept="image/*" capture="environment" onChange={handleIdFileUpload} className="hidden-input" />
-          <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()}>
-            <FileText size={16} /> {t('ageVerification.uploadIdPhoto', 'Upload ID Photo')}
+        <div className="wizard-actions-cluster">
+          {!!selectedJurisdiction && !selectedJurisdiction.requiresProofVerification && (
+            <button className="btn btn-secondary" onClick={handleSelfAttest} disabled={policyUpdating}>
+              I'm Over 18
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={startLocalVerification} disabled={!modelsReady || !systemChecks.getUserMedia || policyUpdating}>
+            Start Local Verification <ChevronRightIcon size={16} />
           </button>
         </div>
-      )}
+      </div>
+    </div>
+  )
 
-      {phase === 'id-processing' && (
-        <div className="id-processing-area">
-          <div className="loading-spinner-small" />
-          <p>{idStatus || 'Processing document locally...'}</p>
-        </div>
-      )}
-
-      {!showVideoFeed && !showIdUpload && phase !== 'id-processing' && (
+  const renderVerification = () => (
+    <div className="wizard-page verify-page">
+      {showVideoFeed && (
         <div className="video-shell">
           <video ref={videoRef} autoPlay playsInline muted className="verification-video" />
           <canvas ref={canvasRef} className="hidden-canvas" aria-hidden="true" />
@@ -1027,144 +772,142 @@ const AgeVerificationModal = ({ channelName, onClose, onVerified }) => {
       <div className="verify-status-area">
         {status && <div className="verify-status"><strong>{status}</strong></div>}
 
-        {qualityIssue && phase === 'face-quality' && (
-          <div className="quality-hint"><AlertTriangle size={14} /> {qualityIssue}</div>
+        {phase === 'face-quality' && qualityIssue && (
+          <div className="quality-hint"><ExclamationTriangleIcon size={14} /> {qualityIssue}</div>
+        )}
+
+        {phase === 'face-quality' && !qualityIssue && faceDetected && (
+          <div className="quality-hint">Face quality looks good. Keep steady.</div>
         )}
 
         {phase === 'scanning' && (
-          <div className="progress-bar-container">
-            <div className="progress-bar-fill" style={{ width: `${Math.min(100, (progress.validFrames / TARGET_FRAMES) * 100)}%` }} />
-            <span className="progress-bar-label">{progress.validFrames}/{TARGET_FRAMES} valid frames</span>
-          </div>
+          <>
+            <div className="progress-bar-container">
+              <div className="progress-bar-fill" style={{ width: `${Math.min(100, (progress.validFrames / TARGET_FRAMES) * 100)}%` }} />
+              <span className="progress-bar-label">{progress.validFrames}/{TARGET_FRAMES} valid frames</span>
+            </div>
+            <div className="liveness-banner">Liveness challenge: blink twice during scan.</div>
+          </>
         )}
 
-        {phase === 'id-prompt' && (
-          <button className="btn btn-primary" onClick={() => { setIdPhase('capture'); setPhase('id-capture'); setIdStatus('Upload a photo of your ID document.') }}>
-            <FileText size={16} /> Provide ID Document
-          </button>
-        )}
-
-        {error && <div className="error-banner"><AlertTriangle size={16} /> {error}</div>}
+        {error && <div className="error-banner"><ExclamationTriangleIcon size={16} /> {error}</div>}
 
         {canRetry && (
           <button className="btn btn-primary" onClick={handleRetry}>
-            <RotateCcw size={16} /> {t('ageVerification.retry', 'Retry')} ({retriesLeft} {t('ageVerification.left', 'left')})
+            <ArrowUturnDownIcon size={16} /> {t('ageVerification.retry', 'Retry')} ({retriesLeft} {t('ageVerification.left', 'left')})
           </button>
         )}
 
-        {phase === 'retry-needed' && retriesLeft === 0 && (
-          <div className="hint-box">{t('ageVerification.noRetriesLeft', 'No retries left. Close and reopen later to try again.')}</div>
+        {!canRetry && ['inconclusive', 'error', 'camera-denied'].includes(phase) && (
+          <div className="hint-box">No retries left. Please use an alternative verification method.</div>
         )}
       </div>
 
       <div className="assurance-strip">
-        <Lock size={12} /> 100% on-device &middot; open-source &middot; zero third-party services
+        <LockClosedIcon size={12} /> Local processing only - no frame storage - no uploads
       </div>
     </div>
   )
 
-  // ── PAGE: Result ──
-const renderResult = () => (
+  const renderResult = () => (
     <div className="wizard-page result-page">
-      <div className={`result-icon ${finalVerdict}`}>
-        {finalVerdict === 'pass' ? <CheckCircle size={56} /> : <XCircle size={56} />}
+      <div className={`result-icon ${finalVerdict === 'pass' ? 'pass' : finalVerdict === 'fail' ? 'fail' : ''}`}>
+        {finalVerdict === 'pass' ? <CheckCircleIcon size={56} /> : finalVerdict === 'fail' ? <XCircleIcon size={56} /> : <ShieldExclamationIcon size={56} />}
       </div>
-      <h2>{finalVerdict === 'pass' ? t('ageVerification.verificationPassed', 'Verification Passed') : t('ageVerification.verificationFailed', 'Verification Failed')}</h2>
-      <p className="result-subtitle">
+
+      <h2>
         {finalVerdict === 'pass'
-          ? t('ageVerification.ageVerified', 'Your age has been verified as 18+. You now have access to this channel.')
-          : status || t('ageVerification.couldNotConfirm', 'The verification could not confirm you are 18 or older.')}
+          ? 'Verification Passed'
+          : finalVerdict === 'fail'
+            ? 'Verification Failed'
+            : 'Verification Inconclusive'}
+      </h2>
+
+      <p className="result-subtitle">
+        {result?.mode === 'self_attestation'
+          ? 'Adult access was granted by self-attestation. Other users may still see this as a higher-risk profile until full verification is completed.'
+          : finalVerdict === 'pass'
+          ? 'You are verified for 18+ access.'
+          : finalVerdict === 'fail'
+            ? 'This check could not verify 18+ eligibility.'
+            : status || 'We could not make a high-confidence decision from this attempt.'}
       </p>
 
       {result && (
         <div className="result-details">
-          <h4>{t('ageVerification.scanDetails', 'Scan Details')}</h4>
-          <div className="result-grid">
-            {result.meanAge !== undefined && <div><strong>{t('ageVerification.estimatedAge', 'Estimated Age')}</strong><span>{result.meanAge} (±{result.stdDev})</span></div>}
-            {result.probOver18 !== undefined && <div><strong>{t('ageVerification.prob18', 'P(18+)')}</strong><span>{(result.probOver18 * 100).toFixed(1)}%</span></div>}
-            {result.validFrames !== undefined && <div><strong>{t('ageVerification.validFrames', 'Valid Frames')}</strong><span>{result.validFrames}</span></div>}
-            {result.lowerBound !== undefined && <div><strong>{t('ageVerification.ageRange', 'Age Range')}</strong><span>{result.lowerBound} - {result.upperBound}</span></div>}
-            {result.passiveMotion !== undefined && <div><strong>{t('ageVerification.liveness', 'Liveness')}</strong><span>{t('ageVerification.motion', 'Motion')}: {result.passiveMotion ? t('ageVerification.detected', 'detected') : t('ageVerification.none', 'none')}</span></div>}
-          </div>
-        </div>
-      )}
-
-      {idResult && (
-        <div className="result-details id-details">
-          <h4>{t('ageVerification.idDocumentDetails', 'ID Document Details')}</h4>
-          <div className="result-grid">
-            <div><strong>{t('ageVerification.document', 'Document')}</strong><span>{idResult.docType || t('ageVerification.unknown', 'unknown')}</span></div>
-            {idResult.country && <div><strong>{t('ageVerification.country', 'Country')}</strong><span>{idResult.country}</span></div>}
-            <div><strong>{t('ageVerification.dob', 'DOB')}</strong><span>{idResult.dob || t('ageVerification.notFound', 'not found')}</span></div>
-            <div><strong>{t('ageVerification.age18Plus', 'Age 18+')}</strong><span>{idResult.ageOver18 ? t('common.yes', 'Yes') : t('common.no', 'No')}</span></div>
-            <div><strong>{t('ageVerification.mrzValid', 'MRZ Valid')}</strong><span>{idResult.docAuthenticity?.mrzValid ? t('common.yes', 'Yes') : t('common.no', 'No')}</span></div>
-            <div><strong>{t('ageVerification.faceMatch', 'Face Match')}</strong><span>{idResult.faceMatch?.passed ? `${t('common.yes', 'Yes')} (${(idResult.faceMatch.similarity * 100).toFixed(0)}%)` : `${t('common.no', 'No')} (${(idResult.faceMatch?.similarity * 100 || 0).toFixed(0)}%)`}</span></div>
-          </div>
+          <h4>{result?.mode === 'self_attestation' ? 'Adult Access Summary' : 'Decision Summary'}</h4>
+          {result?.mode === 'self_attestation' ? (
+            <div className="result-grid">
+              <div><strong>Method</strong><span>Self-attestation</span></div>
+              <div><strong>Policy</strong><span>{result.jurisdictionName || 'Selected jurisdiction'}</span></div>
+              <div><strong>Profile risk</strong><span>Marked as risky until full verification</span></div>
+            </div>
+          ) : (
+            <div className="result-grid">
+              <div><strong>Pass/Fail Confidence</strong><span>{(result.confidence * 100).toFixed(1)}%</span></div>
+              <div><strong>P(age ≥ {AGE_THRESHOLD})</strong><span>{(result.probabilityOverThreshold * 100).toFixed(1)}%</span></div>
+              <div><strong>Valid Frames</strong><span>{result.validFrames}</span></div>
+              <div><strong>Liveness</strong><span>{result.liveness.passed ? 'passed' : 'failed'}</span></div>
+              <div><strong>Passive Motion</strong><span>{result.liveness.passiveMotion ? 'detected' : 'not detected'}</span></div>
+              <div><strong>Blinks</strong><span>{result.liveness.blinkCount}</span></div>
+            </div>
+          )}
         </div>
       )}
 
       <div className="wizard-nav">
-        {finalVerdict === 'fail' && canRetry && (
+        {finalVerdict !== 'pass' && canRetry ? (
           <button className="btn btn-secondary" onClick={handleRetry}>
-            <RotateCcw size={16} /> {t('ageVerification.retry', 'Retry')} ({retriesLeft} {t('ageVerification.left', 'left')})
+            <ArrowUturnDownIcon size={16} /> Retry ({retriesLeft} left)
           </button>
-        )}
-        {!canRetry && finalVerdict === 'fail' && <div />}
-        {finalVerdict === 'pass' && <div />}
-        <button className="btn btn-primary" onClick={() => goToPage(5)}>
-          {finalVerdict === 'pass' ? <>{t('common.continue', 'Continue')} <ChevronRight size={16} /></> : <>{t('common.close', 'Close')} <ChevronRight size={16} /></>}
+        ) : <div />}
+
+        <button className="btn btn-primary" onClick={() => goToPage(4)}>
+          Continue <ChevronRightIcon size={16} />
         </button>
       </div>
     </div>
   )
 
-  // ── PAGE: Conclude ──
   const renderConclude = () => (
     <div className="wizard-page conclude-page">
-      <div className={`conclude-icon ${finalVerdict}`}>
-        {finalVerdict === 'pass' ? <ShieldCheck size={48} /> : <ShieldAlert size={48} />}
+      <div className={`conclude-icon ${finalVerdict === 'pass' ? 'pass' : 'fail'}`}>
+        {finalVerdict === 'pass' ? <ShieldCheckIcon size={48} /> : <ShieldExclamationIcon size={48} />}
       </div>
-      <h2>{finalVerdict === 'pass' ? t('ageVerification.youreAllSet', "You're All Set") : t('ageVerification.verificationIncomplete', 'Verification Incomplete')}</h2>
+
+      <h2>{finalVerdict === 'pass' ? "You're All Set" : 'Verification Incomplete'}</h2>
+
       {finalVerdict === 'pass' ? (
-        <>
-          <p className="conclude-text">
-            {t('ageVerification.complete18Plus', 'Your 18+ verification is complete and will not expire. You can now access age-restricted channels.')}
-          </p>
-          <div className="conclude-reminders">
-            <div className="conclude-reminder">
-              <Lock size={14} />
-              <span>{t('ageVerification.noImagesStored', 'No images, video, or biometric data were stored or transmitted.')}</span>
-            </div>
-            <div className="conclude-reminder">
-              <Code size={14} />
-              <span>{t('ageVerification.onlyVerdictRecorded', 'Only a pass/fail verdict and hashed proof were recorded.')}</span>
-            </div>
-          </div>
-        </>
+        <p className="conclude-text">
+          {result?.mode === 'self_attestation'
+            ? 'Your account now has adult access for this jurisdiction, but it remains marked as self-attested and higher risk until full verification is completed.'
+            : 'Your local age verification is complete. Only pass/fail with confidence was returned.'}
+        </p>
       ) : (
         <p className="conclude-text">
-          {retriesLeft > 0
-            ? t('ageVerification.tryAgainLater', 'You can close this dialog and try again later.')
-            : t('ageVerification.noRetriesRemaining', 'No retries remaining. Close and reopen later to try again.')}
+          Try again later with better lighting or use your alternative verification path.
         </p>
       )}
+
       <div className="wizard-nav center">
         <button className="btn btn-primary" onClick={closeModal}>
-          {finalVerdict === 'pass' ? <>{t('ageVerification.enterChannel', 'Enter Channel')} <ArrowRight size={16} /></> : <>{t('common.close', 'Close')} <X size={16} /></>}
+          {finalVerdict === 'pass' ? <>Enter Channel <ArrowRightIcon size={16} /></> : <>Close <XMarkIcon size={16} /></>}
         </button>
       </div>
     </div>
   )
 
-  return (
+  if (typeof document === 'undefined') return null
+
+  return createPortal((
     <div className="modal-overlay av-overlay-enter" onClick={closeModal}>
       <div className="modal-content age-verification-modal av-modal-enter" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <div className="modal-title">
-            <ShieldAlert size={20} />
+            <ShieldExclamationIcon size={20} />
             <span>{t('ageVerification.ageVerification', 'Age Verification')}</span>
           </div>
-          <button className="modal-close" onClick={closeModal}><X size={18} /></button>
+          <button className="modal-close" onClick={closeModal}><XMarkIcon size={18} /></button>
         </div>
 
         {renderStepDots()}
@@ -1173,15 +916,14 @@ const renderResult = () => (
           <div key={wizardPage} className={`page-transition ${slideDir}`}>
             {currentPageName === 'welcome' && renderWelcome()}
             {currentPageName === 'info' && renderInfo()}
-            {currentPageName === 'method' && renderMethodSelect()}
             {currentPageName === 'verify' && renderVerification()}
             {currentPageName === 'result' && renderResult()}
-            {currentPageName === 'conclude' && renderConclude()}
+            {currentPageName === 'done' && renderConclude()}
           </div>
         </div>
       </div>
     </div>
-  )
+  ), document.body)
 }
 
 export default AgeVerificationModal

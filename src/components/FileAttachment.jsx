@@ -1,16 +1,105 @@
-import React, { useState, useEffect, useRef } from 'react'
-import { FileText, Download, Eye, EyeOff, Code, Music, Film, Image, Play, Pause, Volume2, VolumeX, Maximize, SkipBack, SkipForward } from 'lucide-react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
+import { DocumentTextIcon, ArrowDownTrayIcon, EyeIcon, EyeSlashIcon, CodeBracketIcon, MusicalNoteIcon, FilmIcon, PhotoIcon, PlayIcon, PauseIcon, SpeakerWaveIcon, SpeakerXMarkIcon, ArrowsPointingOutIcon, MagnifyingGlassPlusIcon, MagnifyingGlassMinusIcon, ArrowPathIcon, XMarkIcon } from '@heroicons/react/24/outline'
+import { useAuth } from '../contexts/AuthContext'
+import { settingsService } from '../services/settingsService'
+import { classifyImageUrlForNsfw, getNsfwThresholds } from '../services/nsfwDetectionService'
 import '../assets/styles/FileAttachment.css'
 
 // Custom Audio Player Component
 const CustomAudioPlayer = ({ src, name, size, formatFileSize }) => {
   const audioRef = useRef(null)
+  const audioContextRef = useRef(null)
+  const analyserRef = useRef(null)
+  const sourceNodeRef = useRef(null)
+  const animationFrameRef = useRef(null)
+  const previousVolumeRef = useRef(1)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [volume, setVolume] = useState(1)
   const [isMuted, setIsMuted] = useState(false)
   const [showVolumeSlider, setShowVolumeSlider] = useState(false)
+  const [playbackRate, setPlaybackRate] = useState(1)
+  const [visualizerBars, setVisualizerBars] = useState(() => Array.from({ length: 32 }, () => 0.18))
+
+  const resetVisualizer = useCallback(() => {
+    setVisualizerBars((current) => current.map((_, index) => {
+      const offset = ((index % 6) + 1) / 60
+      return 0.16 + offset
+    }))
+  }, [])
+
+  const stopVisualizerLoop = useCallback(() => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current)
+      animationFrameRef.current = null
+    }
+  }, [])
+
+  const startVisualizerLoop = useCallback(() => {
+    const analyser = analyserRef.current
+    if (!analyser) return
+
+    const buffer = new Uint8Array(analyser.frequencyBinCount)
+
+    const tick = () => {
+      analyser.getByteFrequencyData(buffer)
+
+      setVisualizerBars((current) => current.map((previous, index, all) => {
+        const start = Math.floor((index / all.length) * buffer.length)
+        const end = Math.max(start + 1, Math.floor(((index + 1) / all.length) * buffer.length))
+        let sum = 0
+        for (let i = start; i < end; i += 1) sum += buffer[i]
+        const average = sum / (end - start)
+        const normalized = clamp(average / 255, 0.08, 1)
+        return previous * 0.42 + normalized * 0.58
+      }))
+
+      animationFrameRef.current = requestAnimationFrame(tick)
+    }
+
+    stopVisualizerLoop()
+    tick()
+  }, [stopVisualizerLoop])
+
+  const ensureVisualizer = useCallback(async () => {
+    const audio = audioRef.current
+    if (!audio || typeof window === 'undefined') return false
+
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext
+    if (!AudioContextClass) return false
+
+    try {
+      if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+        audioContextRef.current = new AudioContextClass()
+      }
+
+      const audioContext = audioContextRef.current
+      if (!analyserRef.current) {
+        const analyser = audioContext.createAnalyser()
+        analyser.fftSize = 256
+        analyser.smoothingTimeConstant = 0.72
+        analyser.connect(audioContext.destination)
+        analyserRef.current = analyser
+      }
+
+      if (!sourceNodeRef.current) {
+        const sourceNode = audioContext.createMediaElementSource(audio)
+        sourceNode.connect(analyserRef.current)
+        sourceNodeRef.current = sourceNode
+      }
+
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume()
+      }
+
+      return true
+    } catch (err) {
+      console.warn('[FileAttachment] Failed to initialize audio visualizer:', err)
+      return false
+    }
+  }, [])
   
   useEffect(() => {
     const audio = audioRef.current
@@ -18,28 +107,105 @@ const CustomAudioPlayer = ({ src, name, size, formatFileSize }) => {
     
     const handleLoadedMetadata = () => setDuration(audio.duration)
     const handleTimeUpdate = () => setCurrentTime(audio.currentTime)
-    const handleEnded = () => setIsPlaying(false)
+    const handleDurationChange = () => setDuration(Number.isFinite(audio.duration) ? audio.duration : 0)
+    const handleVolumeChange = () => {
+      setVolume(audio.volume)
+      setIsMuted(audio.muted || audio.volume === 0)
+      if (audio.volume > 0) previousVolumeRef.current = audio.volume
+    }
+    const handleRateChange = () => setPlaybackRate(audio.playbackRate || 1)
+    const handleEnded = () => {
+      setIsPlaying(false)
+      setCurrentTime(audio.duration || 0)
+      stopVisualizerLoop()
+      resetVisualizer()
+    }
+    const handlePlay = async () => {
+      setIsPlaying(true)
+      const visualizerReady = await ensureVisualizer()
+      if (visualizerReady) {
+        startVisualizerLoop()
+      }
+    }
+    const handlePause = () => {
+      setIsPlaying(false)
+      stopVisualizerLoop()
+      resetVisualizer()
+    }
+    const handleEmptied = () => {
+      setCurrentTime(0)
+      setDuration(0)
+      setIsPlaying(false)
+      stopVisualizerLoop()
+      resetVisualizer()
+    }
     
     audio.addEventListener('loadedmetadata', handleLoadedMetadata)
     audio.addEventListener('timeupdate', handleTimeUpdate)
+    audio.addEventListener('durationchange', handleDurationChange)
+    audio.addEventListener('volumechange', handleVolumeChange)
+    audio.addEventListener('ratechange', handleRateChange)
     audio.addEventListener('ended', handleEnded)
+    audio.addEventListener('play', handlePlay)
+    audio.addEventListener('pause', handlePause)
+    audio.addEventListener('emptied', handleEmptied)
     
     return () => {
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata)
       audio.removeEventListener('timeupdate', handleTimeUpdate)
+      audio.removeEventListener('durationchange', handleDurationChange)
+      audio.removeEventListener('volumechange', handleVolumeChange)
+      audio.removeEventListener('ratechange', handleRateChange)
       audio.removeEventListener('ended', handleEnded)
+      audio.removeEventListener('play', handlePlay)
+      audio.removeEventListener('pause', handlePause)
+      audio.removeEventListener('emptied', handleEmptied)
     }
-  }, [src])
+  }, [ensureVisualizer, resetVisualizer, src, startVisualizerLoop, stopVisualizerLoop])
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return undefined
+
+    audio.currentTime = 0
+    audio.pause()
+    audio.load()
+    setCurrentTime(0)
+    setDuration(0)
+    setIsPlaying(false)
+    resetVisualizer()
+
+    return () => {
+      stopVisualizerLoop()
+    }
+  }, [resetVisualizer, src, stopVisualizerLoop])
+
+  useEffect(() => () => {
+    stopVisualizerLoop()
+    try {
+      sourceNodeRef.current?.disconnect()
+    } catch {}
+    try {
+      analyserRef.current?.disconnect()
+    } catch {}
+    try {
+      audioContextRef.current?.close?.().catch(() => {})
+    } catch {}
+  }, [stopVisualizerLoop])
   
-  const togglePlay = () => {
-    if (audioRef.current) {
-      if (isPlaying) {
-        audioRef.current.pause()
-      } else {
-        audioRef.current.play()
-      }
-      setIsPlaying(!isPlaying)
+  const togglePlay = async () => {
+    const audio = audioRef.current
+    if (!audio) return
+
+    if (isPlaying) {
+      audio.pause()
+      return
     }
+
+    await ensureVisualizer()
+    audio.play().catch((err) => {
+      console.warn('[FileAttachment] Failed to play audio attachment:', err)
+    })
   }
   
   const handleSeek = (e) => {
@@ -54,21 +220,36 @@ const CustomAudioPlayer = ({ src, name, size, formatFileSize }) => {
     const vol = parseFloat(e.target.value)
     if (audioRef.current) {
       audioRef.current.volume = vol
+      audioRef.current.muted = vol === 0
       setVolume(vol)
       setIsMuted(vol === 0)
+      if (vol > 0) previousVolumeRef.current = vol
     }
   }
   
   const toggleMute = () => {
     if (audioRef.current) {
       if (isMuted) {
-        audioRef.current.volume = volume || 1
+        const restoredVolume = previousVolumeRef.current > 0 ? previousVolumeRef.current : 1
+        audioRef.current.muted = false
+        audioRef.current.volume = restoredVolume
+        setVolume(restoredVolume)
         setIsMuted(false)
       } else {
+        if (audioRef.current.volume > 0) previousVolumeRef.current = audioRef.current.volume
+        audioRef.current.muted = true
         audioRef.current.volume = 0
         setIsMuted(true)
       }
     }
+  }
+
+  const cyclePlaybackRate = () => {
+    const nextRate = playbackRate >= 2 ? 1 : Number((playbackRate + 0.25).toFixed(2))
+    if (audioRef.current) {
+      audioRef.current.playbackRate = nextRate
+    }
+    setPlaybackRate(nextRate)
   }
   
   const formatTime = (time) => {
@@ -78,19 +259,36 @@ const CustomAudioPlayer = ({ src, name, size, formatFileSize }) => {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
   
+  const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0
+  const volumePercent = (isMuted ? 0 : volume) * 100
+
   return (
     <div className="custom-audio-player">
-      <audio ref={audioRef} src={src} preload="metadata" />
+      <audio ref={audioRef} src={src} preload="metadata" crossOrigin="anonymous" />
+      <div className="media-card-header">
+        <div className="media-card-title-group">
+          <span className="media-card-eyebrow">Audio Attachment</span>
+          <span className="media-card-title" title={name}>{name}</span>
+        </div>
+        <div className="media-card-actions">
+          <button className="media-pill-btn" onClick={cyclePlaybackRate} type="button">
+            {playbackRate}x
+          </button>
+          <a href={src} download={name} className="media-pill-btn" title="Download audio">
+            <ArrowDownTrayIcon width={16} height={16} />
+          </a>
+        </div>
+      </div>
       
       <div className="audio-visualizer">
-        <div className="audio-wave">
-          {[...Array(20)].map((_, i) => (
+        <div className="audio-wave" aria-hidden="true">
+          {visualizerBars.map((value, i) => (
             <div 
               key={i} 
               className={`wave-bar ${isPlaying ? 'playing' : ''}`}
               style={{ 
-                height: isPlaying ? `${Math.random() * 100}%` : '20%',
-                animationDelay: `${i * 0.05}s`
+                height: `${Math.max(14, Math.round(value * 100))}%`,
+                animationDelay: `${i * 0.03}s`
               }}
             />
           ))}
@@ -99,7 +297,7 @@ const CustomAudioPlayer = ({ src, name, size, formatFileSize }) => {
       
       <div className="audio-controls">
         <button className="control-btn play-btn" onClick={togglePlay}>
-          {isPlaying ? <Pause size={20} /> : <Play size={20} />}
+          {isPlaying ? <PauseIcon size={20} /> : <PlayIcon size={20} />}
         </button>
         
         <div className="progress-container">
@@ -111,6 +309,7 @@ const CustomAudioPlayer = ({ src, name, size, formatFileSize }) => {
             max={duration || 100}
             value={currentTime}
             onChange={handleSeek}
+            style={{ '--range-progress': `${progressPercent}%` }}
           />
           <span className="time-display">{formatTime(duration)}</span>
         </div>
@@ -121,7 +320,7 @@ const CustomAudioPlayer = ({ src, name, size, formatFileSize }) => {
             onClick={toggleMute}
             onMouseEnter={() => setShowVolumeSlider(true)}
           >
-            {isMuted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
+            {isMuted || volume === 0 ? <SpeakerXMarkIcon size={18} /> : <SpeakerWaveIcon size={18} />}
           </button>
           
           {showVolumeSlider && (
@@ -137,6 +336,7 @@ const CustomAudioPlayer = ({ src, name, size, formatFileSize }) => {
                 step={0.1}
                 value={isMuted ? 0 : volume}
                 onChange={handleVolumeChange}
+                style={{ '--range-progress': `${volumePercent}%` }}
               />
             </div>
           )}
@@ -144,7 +344,7 @@ const CustomAudioPlayer = ({ src, name, size, formatFileSize }) => {
       </div>
       
       <div className="audio-meta">
-        <Music size={20} className="audio-icon" />
+        <MusicalNoteIcon size={20} className="audio-icon" />
         <div className="audio-details">
           <span className="audio-name">{name}</span>
           <span className="audio-size">{formatFileSize(size)}</span>
@@ -164,6 +364,7 @@ const CustomVideoPlayer = ({ src, name, size, formatFileSize }) => {
   const [isMuted, setIsMuted] = useState(false)
   const [showControls, setShowControls] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [playbackRate, setPlaybackRate] = useState(1)
   const controlsTimeoutRef = useRef(null)
   
   useEffect(() => {
@@ -173,6 +374,8 @@ const CustomVideoPlayer = ({ src, name, size, formatFileSize }) => {
     const handleLoadedMetadata = () => setDuration(video.duration)
     const handleTimeUpdate = () => setCurrentTime(video.currentTime)
     const handleEnded = () => setIsPlaying(false)
+    const handlePlay = () => setIsPlaying(true)
+    const handlePause = () => setIsPlaying(false)
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement)
     }
@@ -180,12 +383,16 @@ const CustomVideoPlayer = ({ src, name, size, formatFileSize }) => {
     video.addEventListener('loadedmetadata', handleLoadedMetadata)
     video.addEventListener('timeupdate', handleTimeUpdate)
     video.addEventListener('ended', handleEnded)
+    video.addEventListener('play', handlePlay)
+    video.addEventListener('pause', handlePause)
     document.addEventListener('fullscreenchange', handleFullscreenChange)
     
     return () => {
       video.removeEventListener('loadedmetadata', handleLoadedMetadata)
       video.removeEventListener('timeupdate', handleTimeUpdate)
       video.removeEventListener('ended', handleEnded)
+      video.removeEventListener('play', handlePlay)
+      video.removeEventListener('pause', handlePause)
       document.removeEventListener('fullscreenchange', handleFullscreenChange)
     }
   }, [src])
@@ -197,7 +404,6 @@ const CustomVideoPlayer = ({ src, name, size, formatFileSize }) => {
       } else {
         videoRef.current.play()
       }
-      setIsPlaying(!isPlaying)
     }
   }
   
@@ -229,6 +435,14 @@ const CustomVideoPlayer = ({ src, name, size, formatFileSize }) => {
       }
     }
   }
+
+  const cyclePlaybackRate = () => {
+    const nextRate = playbackRate >= 2 ? 1 : Number((playbackRate + 0.25).toFixed(2))
+    if (videoRef.current) {
+      videoRef.current.playbackRate = nextRate
+    }
+    setPlaybackRate(nextRate)
+  }
   
   const containerRef = useRef(null)
   
@@ -257,6 +471,9 @@ const CustomVideoPlayer = ({ src, name, size, formatFileSize }) => {
     const secs = Math.floor(time % 60)
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
+
+  const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0
+  const volumePercent = (isMuted ? 0 : volume) * 100
   
   return (
     <div 
@@ -265,6 +482,10 @@ const CustomVideoPlayer = ({ src, name, size, formatFileSize }) => {
       onMouseMove={handleMouseMove}
       onMouseLeave={() => isPlaying && setShowControls(false)}
     >
+      <div className="video-floating-meta">
+        <span className="media-card-eyebrow">Video Attachment</span>
+        <span className="video-floating-title" title={name}>{name}</span>
+      </div>
       <video 
         ref={videoRef} 
         src={src} 
@@ -276,7 +497,7 @@ const CustomVideoPlayer = ({ src, name, size, formatFileSize }) => {
       {!isPlaying && (
         <div className="video-overlay" onClick={togglePlay}>
           <button className="big-play-btn">
-            <Play size={48} />
+            <PlayIcon size={48} />
           </button>
         </div>
       )}
@@ -290,18 +511,19 @@ const CustomVideoPlayer = ({ src, name, size, formatFileSize }) => {
             max={duration || 100}
             value={currentTime}
             onChange={handleSeek}
+            style={{ '--range-progress': `${progressPercent}%` }}
           />
         </div>
         
         <div className="video-controls-row">
           <div className="video-controls-left">
             <button className="control-btn" onClick={togglePlay}>
-              {isPlaying ? <Pause size={20} /> : <Play size={20} />}
+              {isPlaying ? <PauseIcon size={20} /> : <PlayIcon size={20} />}
             </button>
             
             <div className="volume-container">
               <button className="control-btn" onClick={toggleMute}>
-                {isMuted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                {isMuted || volume === 0 ? <SpeakerXMarkIcon size={18} /> : <SpeakerWaveIcon size={18} />}
               </button>
               <input
                 type="range"
@@ -311,6 +533,7 @@ const CustomVideoPlayer = ({ src, name, size, formatFileSize }) => {
                 step={0.1}
                 value={isMuted ? 0 : volume}
                 onChange={handleVolumeChange}
+                style={{ '--range-progress': `${volumePercent}%` }}
               />
             </div>
             
@@ -320,9 +543,15 @@ const CustomVideoPlayer = ({ src, name, size, formatFileSize }) => {
           </div>
           
           <div className="video-controls-right">
+            <button className="control-btn video-rate-btn" onClick={cyclePlaybackRate} type="button" title="Change playback speed">
+              <span className="rate-btn-label">{playbackRate}x</span>
+            </button>
+            <a href={src} download={name} className="control-btn video-download-btn" title="Download video">
+              <ArrowDownTrayIcon width={18} height={18} />
+            </a>
             <span className="video-name">{name}</span>
             <button className="control-btn" onClick={toggleFullscreen}>
-              <Maximize size={18} />
+              <ArrowsPointingOutIcon size={18} />
             </button>
           </div>
         </div>
@@ -414,7 +643,200 @@ const highlightCode = (code, language) => {
   return highlighted
 }
 
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+
+const ImageLightbox = ({ isOpen, url, name, sizeLabel, onClose }) => {
+  const [zoomLevel, setZoomLevel] = useState(1)
+  const [isDragging, setIsDragging] = useState(false)
+  const [position, setPosition] = useState({ x: 0, y: 0 })
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+
+  const resetView = useCallback(() => {
+    setZoomLevel(1)
+    setPosition({ x: 0, y: 0 })
+    setIsDragging(false)
+  }, [])
+
+  const closeLightbox = useCallback(() => {
+    resetView()
+    onClose?.()
+  }, [onClose, resetView])
+
+  const handleZoom = useCallback((delta) => {
+    setZoomLevel((current) => {
+      const nextZoom = clamp(Number((current + delta).toFixed(2)), 1, 4)
+      if (nextZoom === 1) {
+        setPosition({ x: 0, y: 0 })
+      }
+      return nextZoom
+    })
+  }, [])
+
+  const handleReset = useCallback(() => {
+    resetView()
+  }, [resetView])
+
+  useEffect(() => {
+    if (!isOpen || typeof document === 'undefined') return undefined
+
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeLightbox()
+      } else if (event.key === '+' || event.key === '=') {
+        event.preventDefault()
+        handleZoom(0.25)
+      } else if (event.key === '-' || event.key === '_') {
+        event.preventDefault()
+        handleZoom(-0.25)
+      } else if (event.key === '0') {
+        event.preventDefault()
+        handleReset()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [closeLightbox, handleReset, handleZoom, isOpen])
+
+  useEffect(() => {
+    if (isOpen) {
+      resetView()
+    }
+  }, [isOpen, resetView])
+
+  if (!isOpen || typeof document === 'undefined') return null
+
+  const handleMouseDown = (event) => {
+    if (zoomLevel <= 1) return
+    event.preventDefault()
+    setIsDragging(true)
+    setDragStart({
+      x: event.clientX - position.x,
+      y: event.clientY - position.y
+    })
+  }
+
+  const handleMouseMove = (event) => {
+    if (!isDragging || zoomLevel <= 1) return
+    event.preventDefault()
+    setPosition({
+      x: event.clientX - dragStart.x,
+      y: event.clientY - dragStart.y
+    })
+  }
+
+  const handleMouseUp = () => {
+    setIsDragging(false)
+  }
+
+  const handleWheel = (event) => {
+    event.preventDefault()
+    handleZoom(event.deltaY > 0 ? -0.2 : 0.2)
+  }
+
+  const lightbox = (
+    <div
+      className="image-lightbox"
+      onClick={closeLightbox}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Image viewer for ${name}`}
+    >
+      <div className="lightbox-shell" onClick={(event) => event.stopPropagation()}>
+        <div className="lightbox-topbar">
+          <div className="lightbox-file-meta">
+            <span className="lightbox-name" title={name}>{name}</span>
+            {sizeLabel ? <span className="lightbox-size">{sizeLabel}</span> : null}
+          </div>
+          <div className="lightbox-actions">
+            <a
+              href={url}
+              download={name}
+              className="lightbox-action-btn"
+              title="Download image"
+              aria-label="Download image"
+            >
+              <ArrowDownTrayIcon width={18} height={18} />
+            </a>
+            <button
+              type="button"
+              className="lightbox-action-btn"
+              onClick={closeLightbox}
+              aria-label="Close lightbox"
+            >
+              <XMarkIcon width={18} height={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="lightbox-stage" onWheel={handleWheel}>
+          <div
+            className="lightbox-image-container"
+            style={{
+              transform: `translate3d(${position.x}px, ${position.y}px, 0) scale(${zoomLevel})`,
+              cursor: zoomLevel > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default'
+            }}
+            onMouseDown={handleMouseDown}
+          >
+            <img
+              src={url}
+              alt={name}
+              className="lightbox-image"
+              draggable="false"
+              onDragStart={(event) => event.preventDefault()}
+            />
+          </div>
+        </div>
+
+        <div className="lightbox-toolbar">
+          <button
+            type="button"
+            className="lightbox-control-btn"
+            onClick={() => handleZoom(-0.25)}
+            disabled={zoomLevel <= 1}
+            aria-label="Zoom out"
+          >
+            <MagnifyingGlassMinusIcon width={18} height={18} />
+          </button>
+          <span className="zoom-level">{Math.round(zoomLevel * 100)}%</span>
+          <button
+            type="button"
+            className="lightbox-control-btn"
+            onClick={() => handleZoom(0.25)}
+            disabled={zoomLevel >= 4}
+            aria-label="Zoom in"
+          >
+            <MagnifyingGlassPlusIcon width={18} height={18} />
+          </button>
+          <button
+            type="button"
+            className="lightbox-control-btn"
+            onClick={handleReset}
+            disabled={zoomLevel === 1 && position.x === 0 && position.y === 0}
+            aria-label="Reset view"
+          >
+            <ArrowPathIcon width={18} height={18} />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+
+  return createPortal(lightbox, document.body)
+}
+
 const FileAttachment = ({ attachment }) => {
+  const { user } = useAuth()
   const { url, name, size, type: attachmentType, filename } = attachment
   const [fileType, setFileType] = useState(attachmentType || 'file')
   const [content, setContent] = useState(null)
@@ -422,10 +844,24 @@ const FileAttachment = ({ attachment }) => {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
   const [lightboxOpen, setLightboxOpen] = useState(false)
-  const [zoomLevel, setZoomLevel] = useState(1)
-  const [isDragging, setIsDragging] = useState(false)
-  const [position, setPosition] = useState({ x: 0, y: 0 })
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+  const [nsfwFilterEnabled, setNsfwFilterEnabled] = useState(() => !!settingsService.getSetting('nsfwImageFilter'))
+  const [nsfwState, setNsfwState] = useState({ checking: false, blocked: false, reason: null })
+  const [revealBlockedImage, setRevealBlockedImage] = useState(false)
+
+  const isAdultVerified = !!(
+    user?.ageVerification?.adultAccess ||
+    (user?.ageVerification?.verified && user?.ageVerification?.category === 'adult') ||
+    (user?.ageVerification?.method === 'admin_manual' && user?.ageVerification?.category === 'adult')
+  )
+  const senderNsfwFlag = !!attachment?.contentFlags?.nsfw
+  const shouldEnforceNsfwFilter = !isAdultVerified || nsfwFilterEnabled
+
+  useEffect(() => {
+    const unsubscribe = settingsService.subscribe((nextSettings) => {
+      setNsfwFilterEnabled(!!nextSettings?.nsfwImageFilter)
+    })
+    return unsubscribe
+  }, [])
   
   useEffect(() => {
     // Determine file type from extension if not provided
@@ -433,6 +869,45 @@ const FileAttachment = ({ attachment }) => {
       setFileType(getFileType(name))
     }
   }, [name, attachmentType])
+
+  useEffect(() => {
+    let cancelled = false
+    const evaluateImageSafety = async () => {
+      if (fileType !== 'image') return
+      setRevealBlockedImage(false)
+
+      if (!shouldEnforceNsfwFilter) {
+        setNsfwState({ checking: false, blocked: false, reason: null })
+        return
+      }
+
+      if (senderNsfwFlag) {
+        setNsfwState({ checking: false, blocked: true, reason: 'sender_flag' })
+        return
+      }
+
+      setNsfwState({ checking: true, blocked: false, reason: 'receiver_scan' })
+      const thresholds = getNsfwThresholds()
+      const threshold = !isAdultVerified || nsfwFilterEnabled ? thresholds.minor : thresholds.adult
+      const scan = await classifyImageUrlForNsfw(url, { 
+        threshold, 
+        failClosed: false,
+        maxRetries: 3 
+      })
+
+      if (cancelled) return
+      setNsfwState({
+        checking: false,
+        blocked: !!scan?.nsfw,
+        reason: scan?.status || 'receiver_scan'
+      })
+    }
+
+    evaluateImageSafety()
+    return () => {
+      cancelled = true
+    }
+  }, [fileType, url, shouldEnforceNsfwFilter, senderNsfwFlag, isAdultVerified, nsfwFilterEnabled])
   
   const loadTextContent = async () => {
     if (content || isLoading) return
@@ -466,12 +941,17 @@ const FileAttachment = ({ attachment }) => {
   }
   
   const formatFileSize = (size) => {
-    // Handle if size is already formatted (string)
-    if (typeof size === 'string') return size
-    
+    // Handle if size is already formatted (string) but guard against "NaN"
+    if (typeof size === 'string') {
+      if (size === '' || size.toLowerCase() === 'nan') return ''
+      // If it looks like a pre-formatted size string (e.g. "1.2 KB"), return as-is
+      if (/^\d/.test(size)) return size
+    }
+
     // Handle numeric bytes
-    if (!size || isNaN(size)) return ''
-    const bytes = parseInt(size)
+    const bytes = Number(size)
+    if (!Number.isFinite(bytes) || bytes < 0) return ''
+    if (bytes === 0) return '0 B'
     if (bytes < 1024) return bytes + ' B'
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
@@ -479,145 +959,81 @@ const FileAttachment = ({ attachment }) => {
   
   const renderIcon = () => {
     switch (fileType) {
-      case 'image': return <Image size={20} />
-      case 'video': return <Film size={20} />
-      case 'audio': return <Music size={20} />
-      case 'code': return <Code size={20} />
-      default: return <FileText size={20} />
+      case 'image': return <PhotoIcon size={20} />
+      case 'video': return <FilmIcon size={20} />
+      case 'audio': return <MusicalNoteIcon size={20} />
+      case 'code': return <CodeBracketIcon size={20} />
+      default: return <DocumentTextIcon size={20} />
     }
   }
   
   // Image rendering
   if (fileType === 'image') {
-    const handleZoomIn = () => {
-      const newZoom = Math.min(zoomLevel + 0.25, 3)
-      setZoomLevel(newZoom)
-    }
-    const handleZoomOut = () => {
-      const newZoom = Math.max(zoomLevel - 0.25, 0.5)
-      setZoomLevel(newZoom)
-      if (newZoom === 1) setPosition({ x: 0, y: 0 })
-    }
-    const handleResetZoom = () => {
-      setZoomLevel(1)
-      setPosition({ x: 0, y: 0 })
-    }
-    
-    const handleMouseDown = (e) => {
-      e.preventDefault()
-      if (zoomLevel > 1) {
-        setIsDragging(true)
-        setDragStart({ x: e.clientX - position.x, y: e.clientY - position.y })
-      }
-    }
-    
-    const handleMouseMove = (e) => {
-      if (isDragging && zoomLevel > 1) {
-        e.preventDefault()
-        setPosition({
-          x: e.clientX - dragStart.x,
-          y: e.clientY - dragStart.y
-        })
-      }
-    }
-    
-    const handleMouseUp = () => setIsDragging(false)
-    
-    // Prevent default drag behavior on the image
-    const handleDragStart = (e) => {
-      e.preventDefault()
-      return false
-    }
+    const showBlocked = shouldEnforceNsfwFilter && nsfwState.blocked && !revealBlockedImage
+    const canReveal = isAdultVerified && nsfwFilterEnabled
+    const formattedSize = formatFileSize(size)
     
     return (
       <>
-        <div className="attachment-viewer image-viewer">
-          <div 
-            className="image-link"
-            onClick={() => setLightboxOpen(true)}
-            style={{ cursor: 'zoom-in' }}
-          >
-            <img src={url} alt={name} className="attachment-image" />
-          </div>
-          <div className="attachment-info">
-            <span className="attachment-name">{name}</span>
-            <span className="attachment-size">{formatFileSize(size)}</span>
-          </div>
-        </div>
-        
-        {/* Lightbox */}
-        {lightboxOpen && (
-          <div 
-            className="image-lightbox"
-            onClick={() => setLightboxOpen(false)}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-          >
-            <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
-              <div 
-                className="lightbox-image-container"
-                style={{
-                  transform: `scale(${zoomLevel}) translate(${position.x}px, ${position.y}px)`,
-                  cursor: zoomLevel > 1 ? (isDragging ? 'grabbing' : 'grab') : 'zoom-out'
-                }}
-                onMouseDown={handleMouseDown}
-                onClick={(e) => {
-                  if (zoomLevel === 1) setLightboxOpen(false)
-                }}
+        {showBlocked ? (
+          <div className="attachment-viewer image-viewer nsfw-blocked">
+            <div className="nsfw-warning">
+              <strong>Sensitive image hidden</strong>
+              <span>
+                {nsfwState.checking
+                  ? 'Scanning locally...'
+                  : !isAdultVerified
+                    ? 'Age verification is required to view this image.'
+                    : 'NSFW filter is enabled for your account.'}
+              </span>
+            </div>
+            {canReveal && !nsfwState.checking && (
+              <button
+                type="button"
+                className="nsfw-reveal-btn"
+                onClick={() => setRevealBlockedImage(true)}
               >
-                <img 
-                  src={url} 
-                  alt={name} 
-                  className="lightbox-image"
-                  draggable="false"
-                  onDragStart={handleDragStart}
-                />
-              </div>
-              
-              {/* Zoom Controls */}
-              <div className="lightbox-zoom-controls">
-                <button 
-                  className="zoom-btn"
-                  onClick={(e) => { e.stopPropagation(); handleZoomOut(); }}
-                  disabled={zoomLevel <= 0.5}
-                  aria-label="Zoom out"
-                >
-                  −
-                </button>
-                <span className="zoom-level">{Math.round(zoomLevel * 100)}%</span>
-                <button 
-                  className="zoom-btn"
-                  onClick={(e) => { e.stopPropagation(); handleZoomIn(); }}
-                  disabled={zoomLevel >= 3}
-                  aria-label="Zoom in"
-                >
-                  +
-                </button>
-                <button 
-                  className="zoom-btn reset"
-                  onClick={(e) => { e.stopPropagation(); handleResetZoom(); }}
-                  aria-label="Reset zoom"
-                >
-                  ⟲
-                </button>
-              </div>
-              
-              <button 
-                className="lightbox-close"
-                onClick={(e) => { e.stopPropagation(); setLightboxOpen(false); }}
-                aria-label="Close"
-              >
-                ×
+                Reveal once
               </button>
-              
-              <div className="lightbox-info">
-                <span className="lightbox-name">{name}</span>
-                <span className="lightbox-size">{formatFileSize(size)}</span>
+            )}
+            <div className="attachment-info">
+              <span className="attachment-name">{name}</span>
+              <span className="attachment-size">{formatFileSize(size)}</span>
+            </div>
+          </div>
+        ) : (
+          <div className="attachment-viewer image-viewer">
+            <div 
+              className="image-link"
+              onClick={() => setLightboxOpen(true)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  setLightboxOpen(true)
+                }
+              }}
+              aria-label={`Open image ${name}`}
+            >
+              <img src={url} alt={name} className="attachment-image" />
+              <div className="attachment-image-overlay">
+                <span className="attachment-image-chip">Open viewer</span>
               </div>
+            </div>
+            <div className="attachment-info">
+              <span className="attachment-name">{name}</span>
+              <span className="attachment-size">{formattedSize}</span>
             </div>
           </div>
         )}
+        <ImageLightbox
+          isOpen={lightboxOpen}
+          url={url}
+          name={name}
+          sizeLabel={formattedSize}
+          onClose={() => setLightboxOpen(false)}
+        />
       </>
     )
   }
@@ -633,6 +1049,36 @@ const FileAttachment = ({ attachment }) => {
 
   // Audio rendering
   if (fileType === 'audio') {
+    const isVoiceMessage = attachment?.isVoiceMessage
+    const duration = attachment?.duration
+    
+    if (isVoiceMessage) {
+      return (
+        <div className="voice-message-player">
+          <button className="voice-play-btn" onClick={() => {
+            const audio = document.getElementById(`voice-audio-${attachment.id}`)
+            if (audio) {
+              if (audio.paused) audio.play()
+              else audio.pause()
+            }
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z"/>
+            </svg>
+          </button>
+          <div className="voice-waveform">
+            {Array.from({ length: 30 }).map((_, i) => (
+              <span key={i} style={{ height: `${20 + Math.random() * 60}%` }}></span>
+            ))}
+          </div>
+          <span className="voice-duration">
+            {duration ? `${Math.floor(duration / 60)}:${(duration % 60).toString().padStart(2, '0')}` : '0:00'}
+          </span>
+          <audio id={`voice-audio-${attachment.id}`} src={url} preload="metadata" />
+        </div>
+      )
+    }
+    
     return (
       <div className="attachment-viewer audio-viewer">
         <CustomAudioPlayer src={url} name={name} size={size} formatFileSize={formatFileSize} />
@@ -648,7 +1094,7 @@ const FileAttachment = ({ attachment }) => {
       <div className="attachment-viewer code-viewer">
         <div className="code-header">
           <div className="code-header-left">
-            <Code size={18} />
+            <CodeBracketIcon size={18} />
             <span className="code-filename">{name}</span>
             <span className="code-language">{language}</span>
           </div>
@@ -662,7 +1108,7 @@ const FileAttachment = ({ attachment }) => {
                 }}
                 disabled={isLoading}
               >
-                <Eye size={16} />
+                <EyeIcon size={16} />
                 Preview
               </button>
             ) : (
@@ -670,7 +1116,7 @@ const FileAttachment = ({ attachment }) => {
                 className="code-action-btn"
                 onClick={() => setIsExpanded(false)}
               >
-                <EyeOff size={16} />
+                <EyeSlashIcon size={16} />
                 Hide
               </button>
             )}
@@ -680,7 +1126,7 @@ const FileAttachment = ({ attachment }) => {
               className="code-action-btn"
               title="Download"
             >
-              <Download size={16} />
+              <ArrowDownTrayIcon size={16} />
             </a>
           </div>
         </div>
@@ -705,7 +1151,7 @@ const FileAttachment = ({ attachment }) => {
         
         {!isExpanded && (
           <div className="code-collapsed">
-            <FileText size={40} />
+            <DocumentTextIcon size={40} />
             <span>Click Preview to view file contents</span>
           </div>
         )}
@@ -729,7 +1175,7 @@ const FileAttachment = ({ attachment }) => {
         className="file-download-btn"
         title="Download"
       >
-        <Download size={18} />
+        <ArrowDownTrayIcon size={18} />
       </a>
     </div>
   )

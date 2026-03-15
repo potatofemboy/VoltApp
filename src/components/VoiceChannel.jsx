@@ -1,13 +1,27 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { Mic, MicOff, Headphones, VolumeX, PhoneOff, Settings, Volume2, Video, VideoOff, Monitor, MonitorOff, Ghost, Music } from 'lucide-react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { MicrophoneIcon, MusicalNoteIcon, SpeakerXMarkIcon, Cog6ToothIcon, CogIcon, SpeakerWaveIcon, VideoCameraIcon, VideoCameraSlashIcon, ComputerDesktopIcon, SparklesIcon, PhoneXMarkIcon, LockClosedIcon, ShieldCheckIcon, ShieldExclamationIcon, RocketLaunchIcon, XMarkIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline";
+import { Mic, Music, VolumeX, PhoneOff, Settings, Volume2, Video, VideoOff, Monitor, Sparkles, Lock, Shield, ShieldAlert, ShieldCheck, ShieldQuestion, Layers3 } from 'lucide-react'
 import { useTranslation } from '../hooks/useTranslation'
 import { useSocket } from '../contexts/SocketContext'
+import { useAppStore, clearFocusedActivity } from '../store/useAppStore'
+import BuiltinActivityHost from '../activities/BuiltinActivityHost'
 import { useAuth } from '../contexts/AuthContext'
+import { useE2e } from '../contexts/E2eContext'
 import { settingsService } from '../services/settingsService'
 import { soundService } from '../services/soundService'
+import { E2eVoiceVerifier, voiceVerification, VerificationStatus } from '../services/e2eVoiceVerification'
 import Avatar from './Avatar'
 import VoiceFX from './VoiceFX'
+import ScreenSharePicker from './ScreenSharePicker'
+import ActivityPicker from './ActivityPicker'
+import ActivityStrip from './ActivityStrip'
+import StreamOverlayModal from './StreamOverlayModal'
+import { CLIENT_BUILTIN_BY_ID, CLIENT_BUILTIN_ACTIVITIES } from '../activities/builtin/definitions'
+import { loadVoiceOverlayState, saveVoiceOverlayState } from '../services/voiceOverlayService'
+import VoiceChannelTempChat from './VoiceChannelTempChat'
+import { useVoiceTempChat } from '../hooks/useVoiceTempChat'
 import '../assets/styles/VoiceChannel.css'
+import '../assets/styles/ScreenSharePicker.css'
 
 // Fallback ICE servers used only before server provides its list
 // Priority order: self-hosted STUN first, then Google's reliable STUN, then Open Relay Project TURN
@@ -51,27 +65,221 @@ const FALLBACK_ICE_SERVERS = [
   },
 ]
 
-const buildPeerConfig = (serverIceServers = []) => {
-  // Use ONLY the server's ICE servers if available - this ensures everyone
-  // uses the same configuration for consistent connectivity
+const isElectronRuntime = () => {
+  try {
+    const ua = navigator?.userAgent || ''
+    const hasElectronUa = ua.includes('Electron')
+    const hasElectronProcess = !!window?.process?.versions?.electron
+    return hasElectronUa || hasElectronProcess
+  } catch {
+    return false
+  }
+}
+
+const buildPeerConfig = (serverIceServers = [], encrypted = true) => {
+  const isFirefox = typeof navigator !== 'undefined' && navigator.userAgent.includes('Firefox')
+  const isChrome = typeof navigator !== 'undefined' && navigator.userAgent.includes('Chrome') && !navigator.userAgent.includes('Edg')
+  
   const iceServers = serverIceServers.length > 0 ? serverIceServers : FALLBACK_ICE_SERVERS
   
   const stunCount = iceServers.filter(s => s.urls.startsWith('stun')).length
   const turnCount = iceServers.filter(s => s.urls.startsWith('turn')).length
   const source = serverIceServers.length > 0 ? 'server' : 'fallback'
   console.log(`[WebRTC] Building peer config with ${iceServers.length} ICE servers from ${source} (${stunCount} STUN, ${turnCount} TURN)`)
+  console.log(`[WebRTC] Browser: ${isFirefox ? 'Firefox' : isChrome ? 'Chrome' : 'Other'}`)
   console.log(`[WebRTC] ICE servers:`, iceServers.map(s => s.urls))
+  console.log(`[WebRTC] SRTP encryption: ${encrypted ? 'enabled (DTLS-SRTP)' : 'disabled'}`)
   
-  return {
+  const config = {
     iceServers,
-    bundlePolicy: 'max-bundle',   // all m-lines in one bundle — fixes m-line order errors
+    sdpSemantics: 'unified-plan',
+    bundlePolicy: 'max-bundle',
     rtcpMuxPolicy: 'require',
     iceCandidatePoolSize: 10,
-    // FIX: Add more aggressive ICE settings for global connectivity
-    iceTransports: 'all',         // Use all transport types (UDP, TCP, TLS)
-    // Increase timeouts for global connections (high latency)
-    // Note: These are not standard RTCConfig options but some browsers support them
+    iceTransports: 'all',
   }
+  
+  if (isFirefox) {
+    config.iceCandidatePoolSize = 0
+  }
+  
+  return config
+}
+
+// Check if a peer connection is using SRTP encryption
+const isConnectionEncrypted = (pc) => {
+  try {
+    const stats = pc.getStats()
+    let encrypted = false
+    stats.forEach(report => {
+      if (report.type === 'inbound-rtp' || report.type === 'outbound-rtp') {
+        if (report.kind === 'audio' || report.kind === 'video') {
+          // Check if SRTP is being used
+          if (report.scipher || report.cipher) {
+            encrypted = true
+          }
+        }
+      }
+    })
+    return encrypted
+  } catch (e) {
+    return false
+  }
+}
+
+// Chrome requires transceivers to be created before tracks are added mid-negotiation
+const ensureTransceivers = (pc, isVideoOn = false) => {
+  const transceivers = pc.getTransceivers()
+  const hasAudio = transceivers.some(t =>
+    t.sender?.track?.kind === 'audio' || t.receiver?.track?.kind === 'audio'
+  )
+  const hasVideo = transceivers.some(t =>
+    t.sender?.track?.kind === 'video' || t.receiver?.track?.kind === 'video'
+  )
+
+  if (!hasAudio) {
+    try {
+      pc.addTransceiver('audio', { direction: 'sendrecv' })
+      console.log('[WebRTC] Added audio transceiver')
+    } catch (e) {
+      console.warn('[WebRTC] Failed to add audio transceiver:', e.message)
+    }
+  }
+  if (!hasVideo && isVideoOn) {
+    try {
+      pc.addTransceiver('video', { direction: 'sendrecv' })
+      console.log('[WebRTC] Added video transceiver (video enabled)')
+    } catch (e) {
+      console.warn('[WebRTC] Failed to add video transceiver:', e.message)
+    }
+  } else if (hasVideo && !isVideoOn) {
+    console.log('[WebRTC] Skipping video transceiver (video disabled)')
+  }
+}
+
+// Force Opus audio codec for Chrome compatibility
+const forceOpusAudioCodec = (pc) => {
+  try {
+    const audioCaps = RTCRtpSender.getCapabilities?.('audio')?.codecs || []
+    if (audioCaps.length === 0) {
+      console.log('[WebRTC] No audio capabilities available')
+      return
+    }
+    
+    const opusCodecs = audioCaps.filter(c => 
+      c.mimeType?.toLowerCase() === 'audio/opus'
+    )
+    
+    if (opusCodecs.length === 0) {
+      console.log('[WebRTC] No Opus codec available, available:', audioCaps.map(c => c.mimeType).join(', '))
+      return
+    }
+    
+    pc.getTransceivers()
+      .filter(t => (
+        t.sender?.track?.kind === 'audio' ||
+        t.receiver?.track?.kind === 'audio'
+      ))
+      .forEach(t => {
+        try {
+          t.setCodecPreferences(opusCodecs)
+          console.log('[WebRTC] Forced Opus audio codec for transceiver')
+        } catch (e) {
+          console.warn('[WebRTC] Failed to set Opus codec preferences:', e.message)
+        }
+      })
+  } catch (e) {
+    console.warn('[WebRTC] Error forcing Opus codec:', e.message)
+  }
+}
+
+// Chromium can connect but output silence when Opus is not prioritized in m=audio.
+// Reorder payload types in SDP to put Opus first.
+const preferOpusInSdp = (sdp) => {
+  if (!sdp || typeof sdp !== 'string') return sdp
+  
+  const isFirefox = typeof navigator !== 'undefined' && navigator.userAgent.includes('Firefox')
+  if (isFirefox) return sdp
+  
+  const lines = sdp.split('\r\n')
+  const opusPayloads = new Set()
+
+  lines.forEach((line) => {
+    const match = line.match(/^a=rtpmap:(\d+)\s+opus\/48000(?:\/2)?/i)
+    if (match?.[1]) opusPayloads.add(match[1])
+  })
+
+  if (opusPayloads.size === 0) return sdp
+
+  const reordered = lines.map((line) => {
+    if (!line.startsWith('m=audio ')) return line
+    const parts = line.split(' ')
+    if (parts.length < 4) return line
+    const header = parts.slice(0, 3)
+    const payloads = parts.slice(3)
+    const opusFirst = []
+    const others = []
+    payloads.forEach((pt) => {
+      if (opusPayloads.has(pt)) opusFirst.push(pt)
+      else others.push(pt)
+    })
+    if (opusFirst.length === 0) return line
+    return [...header, ...opusFirst, ...others].join(' ')
+  })
+
+  return reordered.join('\r\n')
+}
+
+// Set codec preference for Chrome - prevents black video from codec mismatch
+// Forces H.264/VP8 priority over AV1/VP9 which can fail on some devices
+const setCodecPreferences = (pc) => {
+  // First force Opus for audio (most important for Chrome compatibility)
+  forceOpusAudioCodec(pc)
+  
+  // Then set video codec preferences
+  try {
+    const videoCaps = RTCRtpSender.getCapabilities?.('video')
+    if (!videoCaps?.codecs) return
+    
+    const preferred = videoCaps.codecs.filter(c => 
+      ['video/VP8', 'video/H264'].includes(c.mimeType)
+    )
+    if (preferred.length === 0) return
+    
+    pc.getTransceivers()
+      .filter(t => t.sender?.track?.kind === 'video')
+      .forEach(t => {
+        try {
+          t.setCodecPreferences(preferred)
+        } catch (e) {
+          console.warn('[WebRTC] Failed to set codec preferences:', e.message)
+        }
+      })
+  } catch (e) {
+    // getCapabilities not supported in all browsers
+  }
+}
+
+// Safe addTrack wrapper - waits for stable state before adding tracks (Chrome requirement)
+const addTrackSafe = async (pc, track, stream) => {
+  if (pc.signalingState !== 'stable') {
+    // Wait for stable state
+    await new Promise(resolve => {
+      const checkState = () => {
+        if (pc.signalingState === 'stable') {
+          pc.removeEventListener('signalingstatechange', checkState)
+          resolve()
+        }
+      }
+      pc.addEventListener('signalingstatechange', checkState)
+      // Timeout fallback
+      setTimeout(() => {
+        pc.removeEventListener('signalingstatechange', checkState)
+        resolve()
+      }, 2000)
+    })
+  }
+  pc.addTrack(track, stream)
 }
 
 // Global flag to track if we're intentionally leaving the voice channel
@@ -137,21 +345,141 @@ const detectScreenShareBrowser = () => {
   return { key: 'unknown', label: 'this browser', isFirefoxFamily: false }
 }
 
+const buildVoiceIssue = (code, severity, title, message, fix, action = null) => ({
+  code,
+  severity,
+  title,
+  message,
+  fix,
+  action
+})
+
 const VoiceChannel = ({ channel, joinKey, viewMode = 'full', onLeave, isMuted: externalMuted, isDeafened: externalDeafened, onMuteChange, onDeafenChange, onOpenSettings, onParticipantsChange, onShowConnectionInfo }) => {
   const { socket, connected } = useSocket()
   const { user } = useAuth()
   const { t } = useTranslation()
+  const { isEncryptionEnabled, getServerEncryptionStatus } = useE2e()
+  const { focusedActivityId, activeActivities, setFocusedActivity, clearFocusedActivity, addActivity, removeActivity } = useAppStore()
+  
+  // Check if server encryption is enabled
+  const serverId = channel?.serverId
+  const encryptionEnabled = serverId ? isEncryptionEnabled(serverId) : false
+  
+  // Check encryption status when channel/server changes
+  useEffect(() => {
+    if (serverId) {
+      console.log('[VoiceChannel] Checking encryption status for server:', serverId)
+      getServerEncryptionStatus(serverId)
+    }
+  }, [serverId, getServerEncryptionStatus])
+
+  // Check if user is server admin/owner
+  useEffect(() => {
+    if (!socket || !serverId || !user?.id) {
+      setIsServerAdmin(false)
+      return
+    }
+
+    const checkAdminStatus = async () => {
+      try {
+        const response = await fetch(`/api/servers/${serverId}/my-role`, {
+          credentials: 'include'
+        })
+        if (response.ok) {
+          const data = await response.json()
+          setIsServerAdmin(data.role === 'owner' || data.role === 'admin' || data.permissions?.includes('manage_server'))
+        }
+      } catch (err) {
+        console.warn('[VoiceChannel] Failed to check admin status:', err)
+        setIsServerAdmin(false)
+      }
+    }
+
+    checkAdminStatus()
+  }, [socket, serverId, user?.id])
+
+  // Handle force reconnect from admin
+  useEffect(() => {
+    if (!socket) return
+
+    const handleForceReconnect = ({ channelId: targetChannelId }) => {
+      if (targetChannelId === channel?.id) {
+        console.log('[VoiceChannel] Admin forced reconnect, cleaning up and rejoining...')
+        
+        // Clean up existing connections
+        Object.values(peerConnections.current).forEach(pc => {
+          try { pc.close() } catch {}
+        })
+        peerConnections.current = {}
+        
+        // Notify user
+        if (onLeave) {
+          onLeave()
+        }
+        
+        // Rejoin after short delay
+        setTimeout(() => {
+          window.location.reload()
+        }, 1000)
+      }
+    }
+
+    socket.on('voice:force-reconnect', handleForceReconnect)
+
+    return () => {
+      socket.off('voice:force-reconnect', handleForceReconnect)
+    }
+  }, [socket, channel?.id, onLeave])
+  const [showEncryptionInfo, setShowEncryptionInfo] = useState(false)
+  
   const initialVoiceState = readPersistedVoiceState()
   const [participants, setParticipants] = useState([])
   const [localIsMuted, setLocalIsMuted] = useState(initialVoiceState.muted)
   const [localIsDeafened, setLocalIsDeafened] = useState(initialVoiceState.deafened)
+  const pendingLaunchedActivityIdRef = useRef(null)
+  // Effective local state (can be externally controlled by parent)
+  const currentMuted = externalMuted !== undefined ? externalMuted : localIsMuted
+  const currentDeafened = externalDeafened !== undefined ? externalDeafened : localIsDeafened
   const [isVideoOn, setIsVideoOn] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
+  
+  // Local state for focused builtin activity session
+  const [focusedBuiltinSession, setFocusedBuiltinSession] = useState(null)
+  
+  // Update focusedBuiltinSession when focusedActivityId changes
+  useEffect(() => {
+    if (focusedActivityId && activeActivities.length > 0) {
+      const activity = activeActivities.find(a => a.sessionId === focusedActivityId)
+      // Only focus if activity is valid
+      if (activity && activity.activityId && activity.activityId.startsWith('builtin:')) {
+        setFocusedBuiltinSession({
+          id: activity.sessionId,
+          sessionId: activity.sessionId,
+          activityId: activity.activityId,
+          activityName: activity.activityName || 'Activity',
+          contextType: activity.contextType,
+          contextId: activity.contextId
+        })
+      } else {
+        setFocusedBuiltinSession(null)
+        // If invalid activity was focused, clear it
+        if (activity && !activity.activityId) {
+          clearFocusedActivity()
+          removeActivity(focusedActivityId)
+        }
+      }
+    } else {
+      setFocusedBuiltinSession(null)
+    }
+  }, [focusedActivityId, activeActivities])
   const [localStream, setLocalStream] = useState(null)
   const [localVideoStream, setLocalVideoStream] = useState(null)
   const [screenStream, setScreenStream] = useState(null)
   const [connectionState, setConnectionState] = useState('connecting')
+  const isConnected = connectionState === 'connected'
   const [speaking, setSpeaking] = useState({})
+  const [voiceIssues, setVoiceIssues] = useState([])
+  const [joinedWithoutMic, setJoinedWithoutMic] = useState(false)
   // Per-peer WebRTC connection state: peerId -> 'connecting'|'connected'|'failed'|'disconnected'
   const [peerStates, setPeerStates] = useState({})
   
@@ -161,29 +489,272 @@ const VoiceChannel = ({ channel, joinKey, viewMode = 'full', onLeave, isMuted: e
     candidatePairs: [],
     connectionType: null, // 'host', 'srflx', 'relay'
   })
+  // Voice encryption status - tracks if voice is using DTLS-SRTP
+  const [voiceEncryptionStatus, setVoiceEncryptionStatus] = useState({
+    isEncrypted: false,
+    algorithm: null, // 'DTLS-SRTP' or null
+  })
+  // E2E Voice Verification - per-peer verification status
+  const [peerVerificationStatus, setPeerVerificationStatus] = useState({})
+  const [verifier, setVerifier] = useState(null)
+  const [myFingerprint, setMyFingerprint] = useState('')
+  // Store encryption state in ref for use in callbacks
+  const encryptionEnabledRef = useRef(encryptionEnabled)
+  
+  // Load user's voice fingerprint when encryption is enabled
+  useEffect(() => {
+    if (serverId && encryptionEnabled) {
+      voiceVerification.getShortFingerprint(serverId).then(fp => {
+        setMyFingerprint(fp)
+        console.log('[E2E Voice] Loaded fingerprint:', fp)
+      }).catch(err => {
+        console.error('[E2E Voice] Error loading fingerprint:', err)
+      })
+    }
+  }, [serverId, encryptionEnabled])
+  
+  // Initialize E2E voice verifier when joining a channel
+  useEffect(() => {
+    if (serverId && user?.id && encryptionEnabled) {
+      const newVerifier = new E2eVoiceVerifier(serverId, user.id)
+      setVerifier(newVerifier)
+      console.log('[E2E Voice] Initialized verifier for server:', serverId)
+    }
+  }, [serverId, user?.id, encryptionEnabled])
+  
+  // Trigger verification when participants change
+  useEffect(() => {
+    if (!verifier || !encryptionEnabled) return
+    
+    participants.forEach(async (participant) => {
+      if (participant.id === user?.id) return // Don't verify self
+      if (peerVerificationStatus[participant.id]) return // Already verified
+      
+      try {
+        console.log('[E2E Voice] Verifying peer:', participant.id)
+        const result = await verifier.initiateVerification(participant.id)
+        setPeerVerificationStatus(prev => ({
+          ...prev,
+          [participant.id]: result
+        }))
+        console.log('[E2E Voice] Verification result for', participant.id, ':', result)
+      } catch (err) {
+        console.error('[E2E Voice] Verification failed for', participant.id, ':', err)
+      }
+    })
+  }, [participants, verifier, encryptionEnabled, user?.id])
+  
+  useEffect(() => {
+    encryptionEnabledRef.current = encryptionEnabled
+  }, [encryptionEnabled])
+
+  // Listen for fullscreen events from ActivityStrip
+  useEffect(() => {
+    const handleFullscreen = (e) => {
+      if (e.detail?.sessionId === focusedActivityId) {
+        const container = document.querySelector('.voice-main-activity')
+        if (container) {
+          if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {})
+          } else {
+            container.requestFullscreen().catch(() => {})
+          }
+        }
+      }
+    }
+    window.addEventListener('activity:fullscreen', handleFullscreen)
+    return () => window.removeEventListener('activity:fullscreen', handleFullscreen)
+  }, [focusedActivityId])
+
+  // Activity socket event handlers
+  useEffect(() => {
+    if (!socket || !channel?.id) return
+
+    const onSessions = (data = {}) => {
+      if (!data.sessions || !Array.isArray(data.sessions)) return
+      // Filter sessions for this channel - ONLY valid sessions
+      const channelSessions = data.sessions.filter(s => 
+        s.contextType === 'voice' && 
+        s.contextId === channel.id &&
+        s.id && // Must have id
+        s.activityId && // Must have activityId
+        s.activityId.startsWith('builtin:') // Must be builtin
+      )
+      
+      // Cleanup sessions that no longer exist in this context.
+      const validSessionIds = new Set(channelSessions.map(s => s.id))
+      activeActivities.forEach(activity => {
+        if (!validSessionIds.has(activity.sessionId)) {
+          removeActivity(activity.sessionId)
+          if (focusedActivityId === activity.sessionId) {
+            clearFocusedActivity()
+            // Exit fullscreen if active
+            if (document.fullscreenElement) {
+              document.exitFullscreen().catch(() => {})
+            }
+          }
+        }
+      })
+      
+      // Add all valid sessions to store
+      channelSessions.forEach(session => {
+        const participantCount = Math.max(Number(session.participantCount || 0), 1)
+        const isPendingLaunch = pendingLaunchedActivityIdRef.current && pendingLaunchedActivityIdRef.current === session.activityId
+        if (!activeActivities.find(a => a.sessionId === session.id)) {
+          addActivity({
+            sessionId: session.id,
+            activityId: session.activityId,
+            activityName: session.activityName || 'Activity',
+            ownerId: session.ownerId || session.hostId || null,
+            hostId: session.hostId || session.ownerId || null,
+            contextType: session.contextType,
+            contextId: session.contextId,
+            participantCount
+          })
+        }
+        if (isPendingLaunch) {
+          pendingLaunchedActivityIdRef.current = null
+          setFocusedActivity(session.id)
+          if (String(session.activityId || '').startsWith('builtin:')) {
+            setFocusedBuiltinSession({
+              id: session.id,
+              sessionId: session.id,
+              activityId: session.activityId,
+              activityName: session.activityName || 'Activity',
+              ownerId: session.ownerId || session.hostId || null,
+              hostId: session.hostId || session.ownerId || null,
+              contextType: session.contextType,
+              contextId: session.contextId,
+              participantCount
+            })
+          }
+        }
+      })
+    }
+
+    const onSessionCreated = (payload = {}) => {
+      const session = payload.session || payload
+      if (session.contextType !== 'voice' || session.contextId !== channel.id) return
+      // Validate session has required fields and has participants
+      if (!session.id || !session.activityId || !session.activityId.startsWith('builtin:')) {
+        console.warn('[VoiceChannel] Ignoring invalid session:', session)
+        return
+      }
+      const participantCount = Math.max(Number(session.participantCount || 0), 1)
+      const isPendingLaunch = pendingLaunchedActivityIdRef.current && pendingLaunchedActivityIdRef.current === session.activityId
+      // Check if already exists before adding (extra safety)
+      if (!activeActivities.find(a => a.sessionId === session.id)) {
+        addActivity({
+          sessionId: session.id,
+          activityId: session.activityId,
+          activityName: session.activityName || 'Activity',
+          ownerId: session.ownerId || session.hostId || null,
+          hostId: session.hostId || session.ownerId || null,
+          contextType: session.contextType,
+          contextId: session.contextId,
+          participantCount
+        })
+        // Play sound when new activity created
+        soundService?.activityStart?.() || soundService?.success?.()
+      }
+      if (isPendingLaunch) {
+        pendingLaunchedActivityIdRef.current = null
+        setFocusedActivity(session.id)
+        setFocusedBuiltinSession({
+          id: session.id,
+          sessionId: session.id,
+          activityId: session.activityId,
+          activityName: session.activityName || 'Activity',
+          ownerId: session.ownerId || session.hostId || null,
+          hostId: session.hostId || session.ownerId || null,
+          contextType: session.contextType,
+          contextId: session.contextId,
+          participantCount
+        })
+      }
+    }
+
+    const onSessionEnded = (data = {}) => {
+      if (!data.sessionId) return
+      removeActivity(data.sessionId)
+      if (focusedActivityId === data.sessionId) {
+        clearFocusedActivity()
+      }
+      // Play sound when activity ends
+      soundService?.activityStop?.() || soundService?.callLeft?.()
+    }
+
+    socket.on('activity:sessions', onSessions)
+    socket.on('activity:session-created', onSessionCreated)
+    socket.on('activity:session-ended', onSessionEnded)
+
+    // Request current sessions
+    socket.emit('activity:get-sessions', { contextType: 'voice', contextId: channel.id })
+
+    return () => {
+      socket.off('activity:sessions', onSessions)
+      socket.off('activity:session-created', onSessionCreated)
+      socket.off('activity:session-ended', onSessionEnded)
+    }
+  }, [socket, channel?.id])
+
   // VoiceFX state
   const [showVoiceFX, setShowVoiceFX] = useState(false)
+  const [showScreenSharePicker, setShowScreenSharePicker] = useState(false)
+  const [showActivityPicker, setShowActivityPicker] = useState(false)
+  const [showOverlayStudio, setShowOverlayStudio] = useState(false)
+  const [overlayTarget, setOverlayTarget] = useState('camera')
+  const [cameraOverlays, setCameraOverlays] = useState([])
+  const [screenOverlays, setScreenOverlays] = useState([])
+  const [overlayStorageChannelId, setOverlayStorageChannelId] = useState(null)
   const [voiceFXEnabled, setVoiceFXEnabled] = useState(false)
   const [voiceFXEffect, setVoiceFXEffect] = useState('none')
   const [voiceFXParams, setVoiceFXParams] = useState({})
   const [voiceFXPreviewEnabled, setVoiceFXPreviewEnabled] = useState(false)
   const [screenShareAudioWarning, setScreenShareAudioWarning] = useState('')
+  
+  const tempChat = useVoiceTempChat(
+    participants,
+    isConnected,
+    channel?.id
+  )
   const voiceFXNodesRef = useRef({})
   const voiceFXDryGainRef = useRef(null)
   const voiceFXWetGainRef = useRef(null)
   const voiceFXDestinationRef = useRef(null)
   const voiceFXSourceRef = useRef(null)
   const originalAudioTrackRef = useRef(null)
+  const activeOutboundAudioTrackRef = useRef(null)
+  const activeOutboundAudioStreamRef = useRef(null)
   const voiceFXPreviewAudioRef = useRef(null)
+  const warnedElectronVoiceFXRef = useRef(false)
+  // Enable VoiceFX on all platforms - show warning on Electron if issues occur
+  const voiceFXSupported = true
   // Remote audio analysers for speaking detection: peerId -> { analyser, dataArray }
 const remoteAnalysersRef = useRef({})
 const participantsRef = useRef([])
 // Local per-user overrides: { [userId]: { muted: bool, volume: 0-100, screenShareMuted: bool } }
 const [localUserSettings, setLocalUserSettings] = useState(() => {
-  try { return JSON.parse(localStorage.getItem('voltchat_local_user_settings')) || {} } catch { return {} }
+  try {
+    const parsed = JSON.parse(localStorage.getItem('voltchat_local_user_settings')) || {}
+    const normalized = {}
+    Object.entries(parsed).forEach(([userId, value]) => {
+      const volume = Math.max(0, Math.min(100, Number(value?.volume ?? 100)))
+      normalized[userId] = {
+        // Mute flags are session-local; stale persisted mutes can cause "no audio" confusion.
+        muted: false,
+        screenShareMuted: false,
+        volume
+      }
+    })
+    return normalized
+  } catch {
+    return {}
+  }
 })
 // Right-click context menu state
 const [participantMenu, setParticipantMenu] = useState(null) // { userId, username, x, y }
+const [isServerAdmin, setIsServerAdmin] = useState(false)
 // Video stream management state
 const [videoStreams, setVideoStreams] = useState({})
 const rootViewRef = useRef(null)
@@ -201,15 +772,297 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
   const audioElements = useRef({})
   const videoElements = useRef({})
   const localVideoRef = useRef(null)
+  const remoteVideoMuteTimersRef = useRef({})
   const analyserRef = useRef(null)
   const channelIdRef = useRef(channel?.id)
   const localStreamRef = useRef(null)
   const localVideoStreamRef = useRef(null)
   const screenStreamRef = useRef(null)
+  const rawLocalVideoStreamRef = useRef(null)
+  const rawScreenStreamRef = useRef(null)
+  const schedulePeerReconnectRef = useRef(null)
+  const overlaySessionsRef = useRef({ camera: null, screen: null })
   const hasJoinedRef = useRef(false)
   const hasLeftRef = useRef(false)
   const isInitializingRef = useRef(false)
   const initializedChannelIdRef = useRef(null)
+  const softReconnectInProgressRef = useRef(false)
+  const lastForceReconnectAtRef = useRef(0)
+
+  const stopOverlaySession = useCallback((kind) => {
+    const session = overlaySessionsRef.current[kind]
+    if (!session) return
+    try {
+      session.stop?.()
+    } catch {}
+    overlaySessionsRef.current[kind] = null
+  }, [])
+
+  const drawCoverFrame = useCallback((context, source, destWidth, destHeight) => {
+    const sourceWidth = source?.videoWidth || source?.width || destWidth
+    const sourceHeight = source?.videoHeight || source?.height || destHeight
+    if (!sourceWidth || !sourceHeight) return
+    const scale = Math.max(destWidth / sourceWidth, destHeight / sourceHeight)
+    const drawWidth = sourceWidth * scale
+    const drawHeight = sourceHeight * scale
+    const offsetX = (destWidth - drawWidth) / 2
+    const offsetY = (destHeight - drawHeight) / 2
+    context.drawImage(source, offsetX, offsetY, drawWidth, drawHeight)
+  }, [])
+
+  const buildOverlayCompositeStream = useCallback((kind, sourceStream, overlays = []) => {
+    stopOverlaySession(kind)
+    if (!sourceStream) return null
+    const videoTrack = sourceStream.getVideoTracks?.()[0]
+    if (!videoTrack || !Array.isArray(overlays) || overlays.length === 0) {
+      return sourceStream
+    }
+
+    const settings = videoTrack.getSettings?.() || {}
+    const referenceOverlay = overlays.find(Boolean)
+    const stageWidth = Math.max(1, Number(referenceOverlay?.stageWidth) || 1280)
+    const stageHeight = Math.max(1, Number(referenceOverlay?.stageHeight) || 720)
+    const stageAspect = stageWidth / stageHeight
+    const sourceWidth = Math.max(1, Math.round(settings.width || 1280))
+    const sourceHeight = Math.max(1, Math.round(settings.height || 720))
+    const canvas = document.createElement('canvas')
+    if (sourceWidth / sourceHeight > stageAspect) {
+      canvas.height = Math.max(360, sourceHeight)
+      canvas.width = Math.max(640, Math.round(canvas.height * stageAspect))
+    } else {
+      canvas.width = Math.max(640, sourceWidth)
+      canvas.height = Math.max(360, Math.round(canvas.width / stageAspect))
+    }
+    const context = canvas.getContext('2d')
+    if (!context) return sourceStream
+
+    const video = document.createElement('video')
+    video.muted = true
+    video.playsInline = true
+    video.autoplay = true
+    video.srcObject = new MediaStream([videoTrack])
+    video.play?.().catch(() => {})
+
+    const assetCache = new Map()
+    const assetHost = document.createElement('div')
+    assetHost.style.position = 'fixed'
+    assetHost.style.left = '-9999px'
+    assetHost.style.top = '0'
+    assetHost.style.width = '1px'
+    assetHost.style.height = '1px'
+    assetHost.style.opacity = '0.01'
+    assetHost.style.pointerEvents = 'none'
+    assetHost.style.overflow = 'hidden'
+    assetHost.style.zIndex = '-1'
+    document.body.appendChild(assetHost)
+    let rafId = 0
+    let stopped = false
+
+    const getAsset = (overlay) => {
+      if (!overlay?.src) return null
+      if (assetCache.has(overlay.id)) return assetCache.get(overlay.id)
+      const image = document.createElement('img')
+      image.crossOrigin = 'anonymous'
+      image.alt = overlay.title || 'overlay'
+      image.decoding = 'async'
+      image.style.display = 'block'
+      image.style.width = '1px'
+      image.style.height = '1px'
+      image.style.objectFit = 'cover'
+      image.src = overlay.src
+      assetHost.appendChild(image)
+      assetCache.set(overlay.id, image)
+      return image
+    }
+
+    const drawFrame = () => {
+      if (stopped) return
+      context.clearRect(0, 0, canvas.width, canvas.height)
+      if (video.readyState >= 2) {
+        drawCoverFrame(context, video, canvas.width, canvas.height)
+      } else {
+        context.fillStyle = '#060910'
+        context.fillRect(0, 0, canvas.width, canvas.height)
+      }
+
+      overlays.forEach((overlay) => {
+        const overlayStageWidth = Math.max(1, Number(overlay.stageWidth) || stageWidth)
+        const overlayStageHeight = Math.max(1, Number(overlay.stageHeight) || stageHeight)
+        const scaleX = canvas.width / overlayStageWidth
+        const scaleY = canvas.height / overlayStageHeight
+        const x = (Number(overlay.x) || 0) * scaleX
+        const y = (Number(overlay.y) || 0) * scaleY
+        const width = Math.max(80, (Number(overlay.width) || 180) * scaleX)
+        const height = Math.max(50, (Number(overlay.height) || 100) * scaleY)
+
+        if (overlay.type === 'text' && overlay.content) {
+          context.save()
+          context.fillStyle = overlay.background || 'rgba(7, 10, 18, 0.58)'
+          const radius = 18
+          context.beginPath()
+          context.moveTo(x + radius, y)
+          context.lineTo(x + width - radius, y)
+          context.quadraticCurveTo(x + width, y, x + width, y + radius)
+          context.lineTo(x + width, y + height - radius)
+          context.quadraticCurveTo(x + width, y + height, x + width - radius, y + height)
+          context.lineTo(x + radius, y + height)
+          context.quadraticCurveTo(x, y + height, x, y + height - radius)
+          context.lineTo(x, y + radius)
+          context.quadraticCurveTo(x, y, x + radius, y)
+          context.closePath()
+          context.fill()
+          context.fillStyle = overlay.color || '#ffffff'
+          context.font = `600 ${Math.max(14, Math.round(18 * scaleY))}px sans-serif`
+          context.fillText(overlay.title || 'Overlay', x + 14, y + 26)
+          context.font = `400 ${Math.max(12, Math.round(16 * scaleY))}px sans-serif`
+          const words = String(overlay.content).split(/\s+/)
+          let line = ''
+          let lineY = y + 52
+          words.forEach((word) => {
+            const testLine = line ? `${line} ${word}` : word
+            if (context.measureText(testLine).width > width - 28 && line) {
+              context.fillText(line, x + 14, lineY)
+              line = word
+              lineY += 20
+            } else {
+              line = testLine
+            }
+          })
+          if (line && lineY <= y + height - 12) {
+            context.fillText(line, x + 14, lineY)
+          }
+          context.restore()
+          return
+        }
+
+        const asset = getAsset(overlay)
+        if (asset && (asset.complete || overlay.type === 'gif') && asset.naturalWidth > 0) {
+          context.drawImage(asset, x, y, width, height)
+        }
+      })
+
+      rafId = window.requestAnimationFrame(drawFrame)
+    }
+
+    drawFrame()
+
+    const output = canvas.captureStream(Math.min(30, Number(settings.frameRate) || 30))
+    sourceStream.getAudioTracks().forEach((track) => output.addTrack(track))
+    const outputVideoTrack = output.getVideoTracks?.()[0]
+    if (outputVideoTrack) {
+      outputVideoTrack._senderTag = kind === 'camera' ? 'camera' : 'screen'
+    }
+    output.getAudioTracks?.().forEach((track) => {
+      track._senderTag = kind === 'screen' ? 'screen-audio' : track._senderTag
+    })
+
+    overlaySessionsRef.current[kind] = {
+      stream: output,
+      stop: () => {
+        stopped = true
+        if (rafId) window.cancelAnimationFrame(rafId)
+        output.getVideoTracks?.().forEach((track) => track.stop())
+        try { video.pause?.() } catch {}
+        video.srcObject = null
+        try { assetHost.remove() } catch {}
+        assetCache.clear()
+      }
+    }
+
+    return output
+  }, [drawCoverFrame, stopOverlaySession])
+
+  const upsertVoiceIssue = useCallback((issue) => {
+    if (!issue?.code) return
+    setVoiceIssues(prev => {
+      const next = prev.filter(entry => entry?.code !== issue.code)
+      return [...next, issue]
+    })
+  }, [])
+
+  const clearVoiceIssue = useCallback((code) => {
+    if (!code) return
+    setVoiceIssues(prev => prev.filter(entry => entry?.code !== code))
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      stopOverlaySession('camera')
+      stopOverlaySession('screen')
+    }
+  }, [stopOverlaySession])
+
+  const diagnoseMediaError = useCallback((err, source = 'microphone') => {
+    const noun = source === 'camera' ? 'camera' : source === 'screen' ? 'screen share' : 'microphone'
+    const displayName = `${noun[0].toUpperCase()}${noun.slice(1)}`
+    const settingsAction = source === 'screen' ? null : 'settings'
+
+    if (!err) {
+      return buildVoiceIssue(
+        `${source}-unknown`,
+        'warning',
+        `${displayName} unavailable`,
+        `Volt could not access your ${noun}.`,
+        `Open Voice Settings, confirm the correct ${noun} is selected, and try again.`,
+        settingsAction
+      )
+    }
+
+    if (err.name === 'NotAllowedError' || err.name === 'SecurityError') {
+      return buildVoiceIssue(
+        `${source}-permission`,
+        'warning',
+        `${displayName} permission blocked`,
+        `The browser or desktop app blocked access to your ${noun}.`,
+        source === 'screen'
+          ? 'Allow screen capture in the system or browser prompt, then start sharing again.'
+          : `Allow ${noun} access for this site or app, then retry from Voice Settings.`,
+        settingsAction
+      )
+    }
+
+    if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+      return buildVoiceIssue(
+        `${source}-missing`,
+        'warning',
+        `${displayName} not found`,
+        `No usable ${noun} was detected on this device.`,
+        `Connect a ${noun}, or pick another input in Voice Settings.`,
+        settingsAction
+      )
+    }
+
+    if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
+      return buildVoiceIssue(
+        `${source}-unavailable-device`,
+        'warning',
+        `${displayName} selection is invalid`,
+        `Your saved ${noun} device is missing or no longer matches the current hardware.`,
+        `Open Voice Settings and switch ${noun} back to the default device.`,
+        settingsAction
+      )
+    }
+
+    if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+      return buildVoiceIssue(
+        `${source}-busy`,
+        'warning',
+        `${displayName} is busy`,
+        `Another app may already be using your ${noun}.`,
+        `Close other calls or recorder apps using the ${noun}, then try again.`,
+        settingsAction
+      )
+    }
+
+    return buildVoiceIssue(
+      `${source}-error`,
+      'warning',
+      `${displayName} failed to start`,
+      err.message || `Volt could not start your ${noun}.`,
+      `Re-open Voice Settings and retry. If this keeps happening, reconnect the device or restart the browser/app.`,
+      settingsAction
+    )
+  }, [])
 
   // Perfect negotiation state per peer
   const makingOfferRef  = useRef({})   // peerId -> bool
@@ -220,8 +1073,32 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
   const negotiationLockRef = useRef({}) // peerId -> bool (prevents concurrent negotiations)
   const negotiationCompleteRef = useRef({}) // peerId -> bool (track if initial negotiation done)
 
+  // Per-peer signal queue for serialized signaling (prevents dropped offers)
+  const signalChainRef = useRef({}) // peerId -> Promise chain
+  const isSettingRemoteAnswerPendingRef = useRef({}) // peerId -> bool
+
+  // Per-peer signal queue helper - serializes signaling operations per peer
+  const enqueueSignal = useCallback((peerId, fn) => {
+    const prev = signalChainRef.current[peerId] || Promise.resolve()
+    const next = prev
+      .catch(() => {}) // don't break the chain on errors
+      .then(fn)
+    signalChainRef.current[peerId] = next
+    return next
+  }, [])
+
   // ICE server list received from the Voltage server on voice:participants
   const serverIceServersRef = useRef([])
+  
+  // Heartbeat/ping system to detect stale connections
+  const heartbeatIntervalRef = useRef(null)
+  const lastHeartbeatRef = useRef({})
+  
+  // Per-peer disconnected grace tracking for monitorPeerConnection
+  const peerDisconnectedGraceRef = useRef({}) // peerId -> timestamp first seen disconnected
+  
+  // Exponential backoff state for reconnect attempts
+  const reconnectBackoffRef = useRef({ attempts: 0, lastAttemptAt: 0 })
   
   // Notify parent of participants changes (for sidebar display)
   useEffect(() => {
@@ -230,17 +1107,172 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
 
   // Apply local user setting (volume/mute) to a peer's audio element
   const applyLocalUserSetting = useCallback((userId, settings) => {
+    const globalSettings = settingsService.getSettings()
+    const globalVolume = Math.max(0, Math.min(1, (globalSettings.volume ?? 100) / 100))
+    const globallyMuted = !!globalSettings.muteAll || !!currentDeafened
+    const userVolume = Math.max(0, Math.min(1, (settings.volume ?? 100) / 100))
+    const effectiveVolume = globalVolume * userVolume
     const voiceEl = audioElements.current[userId]
     if (voiceEl instanceof HTMLMediaElement) {
-      voiceEl.muted = settings.muted ?? false
-      voiceEl.volume = Math.max(0, Math.min(1, (settings.volume ?? 100) / 100))
+      voiceEl.muted = globallyMuted || !!(settings.muted ?? false)
+      voiceEl.volume = effectiveVolume
     }
     const screenEl = audioElements.current[`${userId}__screen`]
     if (screenEl instanceof HTMLMediaElement) {
-      screenEl.muted = settings.screenShareMuted ?? false
-      screenEl.volume = Math.max(0, Math.min(1, (settings.volume ?? 100) / 100))
+      screenEl.muted = globallyMuted || !!(settings.screenShareMuted ?? false)
+      screenEl.volume = effectiveVolume
+    }
+  }, [currentDeafened])
+
+  useEffect(() => {
+    if (!socket) return
+
+    const onDisconnect = (reason) => {
+      upsertVoiceIssue(buildVoiceIssue(
+        'socket-disconnected',
+        'error',
+        'Realtime connection lost',
+        reason ? `The realtime connection dropped: ${reason}.` : 'The realtime connection dropped.',
+        'Check your network, wait for reconnect, or leave and rejoin the voice channel if it stays stuck.',
+        'details'
+      ))
+    }
+
+    const onConnect = () => {
+      clearVoiceIssue('socket-disconnected')
+    }
+
+    socket.on('disconnect', onDisconnect)
+    socket.on('connect', onConnect)
+
+    return () => {
+      socket.off('disconnect', onDisconnect)
+      socket.off('connect', onConnect)
+    }
+  }, [socket, upsertVoiceIssue, clearVoiceIssue])
+
+  useEffect(() => {
+    if (!navigator.mediaDevices?.addEventListener) return
+
+    const handleDeviceChange = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const hasAudioInput = devices.some(device => device.kind === 'audioinput')
+        if (!hasAudioInput) {
+          upsertVoiceIssue(buildVoiceIssue(
+            'microphone-missing-live',
+            'warning',
+            'Microphone disconnected',
+            'Your microphone is no longer available while voice is active.',
+            'Reconnect the device, then open Voice Settings or rejoin the channel if input does not recover.',
+            'settings'
+          ))
+        } else {
+          clearVoiceIssue('microphone-missing-live')
+        }
+      } catch {}
+    }
+
+    navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange)
+    return () => navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange)
+  }, [upsertVoiceIssue, clearVoiceIssue])
+
+  // Chromium/Electron can retain stale audiooutput IDs between sessions.
+  // If setSinkId fails, fall back to system default to prevent silent playback.
+  const applyOutputDevice = useCallback(async (audioEl, desiredDeviceId) => {
+    if (!audioEl?.setSinkId) return true
+
+    const targetDevice = desiredDeviceId || 'default'
+    try {
+      await audioEl.setSinkId(targetDevice)
+      return true
+    } catch (err) {
+      if (targetDevice !== 'default') {
+        try {
+          await audioEl.setSinkId('default')
+          const settings = settingsService.getSettings()
+          if (settings.outputDevice !== 'default') {
+            settingsService.saveSettings({ ...settings, outputDevice: 'default' })
+          }
+          console.warn('[WebRTC] Failed to use output device, fell back to default:', targetDevice, err?.name || err)
+          return true
+        } catch (fallbackErr) {
+          console.warn('[WebRTC] Failed to fall back to default output device:', fallbackErr?.name || fallbackErr)
+        }
+      } else {
+        console.warn('[WebRTC] Failed to set default output device:', err?.name || err)
+      }
+      return false
     }
   }, [])
+
+  const gracefulReconnect = useCallback(async (peerId) => {
+    console.log(`[Voice] Attempting graceful reconnect for peer ${peerId}`)
+    const pc = peerConnections.current[peerId]
+    if (pc) {
+      try {
+        pc.restartIce()
+      } catch {
+        pc.close()
+        delete peerConnections.current[peerId]
+      }
+    }
+  }, [])
+
+  const monitorPeerConnection = useCallback((peerId, pc) => {
+    if (!pc) return
+    
+    // Grace period: tolerate 'disconnected' for up to 12s before acting.
+    // Only immediately act on 'failed'. This avoids killing peers that are
+    // briefly flapping due to network hiccups or route changes.
+    const DISCONNECTED_GRACE_MS = 12000
+    
+    const interval = setInterval(() => {
+      if (!pc || pc.connectionState === 'closed') {
+        // Connection already torn down, stop monitoring
+        delete peerDisconnectedGraceRef.current[peerId]
+        clearInterval(interval)
+        return
+      }
+      
+      const iceState = pc.iceConnectionState
+      
+      if (iceState === 'failed') {
+        console.log(`[Voice] Peer ${peerId} ICE failed, attempting graceful recovery`)
+        delete peerDisconnectedGraceRef.current[peerId]
+        gracefulReconnect(peerId)
+        return
+      }
+      
+      if (iceState === 'disconnected') {
+        const now = Date.now()
+        if (!peerDisconnectedGraceRef.current[peerId]) {
+          // First time seeing disconnected — start grace timer
+          peerDisconnectedGraceRef.current[peerId] = now
+          console.log(`[Voice] Monitor: peer ${peerId} disconnected — grace period started (${DISCONNECTED_GRACE_MS}ms)`)
+          return
+        }
+        const elapsed = now - peerDisconnectedGraceRef.current[peerId]
+        if (elapsed >= DISCONNECTED_GRACE_MS) {
+          console.log(`[Voice] Monitor: peer ${peerId} disconnected for ${elapsed}ms — exceeds grace, restarting ICE`)
+          delete peerDisconnectedGraceRef.current[peerId]
+          try { pc.restartIce() } catch { gracefulReconnect(peerId) }
+        }
+        return
+      }
+      
+      // Peer recovered or is connected/checking — clear grace timer
+      if (peerDisconnectedGraceRef.current[peerId]) {
+        console.log(`[Voice] Monitor: peer ${peerId} recovered from disconnected state (now ${iceState})`)
+        delete peerDisconnectedGraceRef.current[peerId]
+      }
+    }, 5000)
+    
+    return () => {
+      clearInterval(interval)
+      delete peerDisconnectedGraceRef.current[peerId]
+    }
+  }, [gracefulReconnect])
 
   const isLikelyScreenAudioTrack = useCallback((userId, track, stream) => {
     if (!track) return false
@@ -259,7 +1291,13 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
   const setLocalUserSetting = useCallback((userId, patch) => {
     setLocalUserSettings(prev => {
       const next = { ...prev, [userId]: { ...(prev[userId] || { muted: false, volume: 100, screenShareMuted: false }), ...patch } }
-      try { localStorage.setItem('voltchat_local_user_settings', JSON.stringify(next)) } catch {}
+      try {
+        // Persist only volume so stale mute flags don't survive app restarts.
+        const persisted = Object.fromEntries(
+          Object.entries(next).map(([id, settings]) => [id, { volume: settings?.volume ?? 100 }])
+        )
+        localStorage.setItem('voltchat_local_user_settings', JSON.stringify(persisted))
+      } catch {}
       applyLocalUserSetting(userId, next[userId])
       return next
     })
@@ -327,10 +1365,124 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
     })
 
     setParticipants(prev => prev.map(p => (
-      p.id === userId
+      p?.id === userId
         ? { ...p, hasVideo: false, videoStream: null, isScreenSharing: false }
         : p
-    )))
+    )).filter(p => p?.id))
+  }, [])
+
+  const clearRemoteVideoMuteTimer = useCallback((userId) => {
+    const timer = remoteVideoMuteTimersRef.current[userId]
+    if (!timer) return
+    clearTimeout(timer)
+    delete remoteVideoMuteTimersRef.current[userId]
+  }, [])
+
+  const scheduleRemoteVideoMuteClear = useCallback((userId, track, delayMs = 4000) => {
+    clearRemoteVideoMuteTimer(userId)
+    remoteVideoMuteTimersRef.current[userId] = setTimeout(() => {
+      delete remoteVideoMuteTimersRef.current[userId]
+      if (track?.readyState !== 'live' || track?.muted) {
+        console.log(`[WebRTC] Video track stayed muted for ${userId} >${delayMs}ms, clearing UI state`)
+        clearRemoteVideoState(userId)
+      }
+    }, delayMs)
+  }, [clearRemoteVideoMuteTimer, clearRemoteVideoState])
+
+  // Rebuild peer mesh in-place without leaving the voice channel.
+  // This avoids "random kicks" when server requests a reconnect.
+  const performInPlaceReconnect = useCallback((reason = 'force-reconnect') => {
+    const activeChannelId = channelIdRef.current
+    if (!activeChannelId || !hasJoinedRef.current || !user?.id) return
+
+    const now = Date.now()
+    if (now - lastForceReconnectAtRef.current < 4000) {
+      console.log(`[Voice] Ignoring duplicate reconnect request (${reason})`)
+      return
+    }
+    lastForceReconnectAtRef.current = now
+
+    if (softReconnectInProgressRef.current) {
+      console.log(`[Voice] Reconnect already in progress (${reason})`)
+      return
+    }
+    softReconnectInProgressRef.current = true
+
+    console.log(`[Voice] Performing in-place reconnect: ${reason}`)
+
+    // Close all existing peer mesh links and clear per-peer state.
+    Object.values(peerConnections.current).forEach(pc => {
+      try { pc.close() } catch {}
+    })
+    peerConnections.current = {}
+
+    Object.entries(audioElements.current).forEach(([key, node]) => {
+      if (key.includes('__webaudio')) {
+        try { node?.disconnect() } catch {}
+      } else if (node?.pause) {
+        try { node.pause() } catch {}
+        node.srcObject = null
+        if (node.parentNode) node.parentNode.removeChild(node)
+      }
+    })
+    audioElements.current = {}
+
+    Object.entries(videoElements.current).forEach(([, node]) => {
+      if (!node?.pause) return
+      try { node.pause() } catch {}
+      node.srcObject = null
+      if (node.parentNode) node.parentNode.removeChild(node)
+    })
+    videoElements.current = {}
+
+    Object.values(remoteAnalysersRef.current).forEach(entry => {
+      try { entry?.audioContext?.close()?.catch(() => {}) } catch {}
+    })
+    remoteAnalysersRef.current = {}
+    remoteStreams.current = {}
+
+    makingOfferRef.current = {}
+    ignoreOfferRef.current = {}
+    remoteDescSetRef.current = {}
+    pendingCandidatesRef.current = {}
+    lastOfferTimeRef.current = {}
+    negotiationLockRef.current = {}
+    negotiationCompleteRef.current = {}
+    signalChainRef.current = {}
+    isSettingRemoteAnswerPendingRef.current = {}
+
+    connectionQueueRef.current = []
+    isProcessingQueueRef.current = false
+    activeNegotiationsRef.current = 0
+    pendingPeerCountRef.current = 0
+    isMassJoinInProgressRef.current = false
+
+    setPeerStates({})
+    setSpeaking({})
+    setVideoStreams({})
+    setParticipants(prev => prev.filter(p => p.id === user?.id))
+
+    if (socket?.connected) {
+      socket.emit('voice:join', {
+        channelId: activeChannelId,
+        peerId: user.id
+      })
+      socket.emit('voice:get-participants', { channelId: activeChannelId })
+      console.log('[Voice] Re-emitted voice:join for in-place reconnect')
+    } else {
+      console.log('[Voice] Socket disconnected during in-place reconnect, waiting for reconnect')
+    }
+
+    setTimeout(() => {
+      softReconnectInProgressRef.current = false
+    }, 1500)
+  }, [socket, user?.id])
+
+  useEffect(() => {
+    return () => {
+      Object.values(remoteVideoMuteTimersRef.current).forEach(timer => clearTimeout(timer))
+      remoteVideoMuteTimersRef.current = {}
+    }
   }, [])
 
   // Helper to update all peer connections with a new audio track
@@ -339,7 +1491,8 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       try {
         const senders = pc.getSenders()
         const audioSender = senders.find((s) => {
-          if (s.track?.kind === 'audio') return true
+          if (s.track?._senderTag === 'mic') return true
+          if (s.track?.kind === 'audio' && s.track?._senderTag !== 'screen-audio') return true
           const tx = pc.getTransceivers?.().find(t => t.sender === s)
           return tx?.receiver?.track?.kind === 'audio'
         })
@@ -376,6 +1529,58 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       return
     }
 
+    const restorePassthrough = () => {
+      try { source.disconnect(dryGain) } catch {}
+      try { source.disconnect(wetGain) } catch {}
+      try { dryGain.disconnect() } catch {}
+      try { wetGain.disconnect() } catch {}
+      try {
+        source.connect(dryGain)
+        dryGain.connect(destination)
+        dryGain.gain.value = 1
+        wetGain.gain.value = 0
+      } catch (e) {
+        console.warn('[VoiceFX] Failed to restore passthrough graph:', e)
+      }
+      const passthroughTrack = destination.stream.getAudioTracks()[0] || originalAudioTrackRef.current
+      if (passthroughTrack) {
+        passthroughTrack._senderTag = 'mic'
+        activeOutboundAudioTrackRef.current = passthroughTrack
+        activeOutboundAudioStreamRef.current = destination.stream
+        updateAllPeerTracks(voiceFXPreviewEnabled ? null : passthroughTrack)
+      }
+    }
+
+    const createProcessor = (bufferSize, inChannels = 1, outChannels = 1) => {
+      if (typeof audioContext.createScriptProcessor !== 'function') {
+        throw new Error('ScriptProcessorNode is not available in this runtime')
+      }
+      return audioContext.createScriptProcessor(bufferSize, inChannels, outChannels)
+    }
+
+    // Effects that don't require ScriptProcessorNode and can work on Electron
+    const electronSafeEffects = ['none', 'reverb', 'delay', 'distortion', 'chorus', 'flanger', 'vibrato', 'radio', 'underwater', 'stadium', 'tunnel', 'broadcast']
+    
+    if (isElectronRuntime() && effectName && effectName !== 'none' && !electronSafeEffects.includes(effectName)) {
+      if (!warnedElectronVoiceFXRef.current) {
+        warnedElectronVoiceFXRef.current = true
+        console.warn('[VoiceFX] Electron compatibility mode: some effects require ScriptProcessor which can cause renderer crashes. Using simplified version or disabling.')
+      }
+      // For Electron, use a simplified version or fall back to passthrough
+      // Check if we can use the effect without ScriptProcessor
+      const effectsNeedingProcessor = ['pitch', 'tremolo', 'robot', 'alien', 'vocoder', 'phone', 'whisper', 'demon', 'helium', 'lofi', 'cyberpunk']
+      if (effectsNeedingProcessor.includes(effectName)) {
+        // Disable effect that requires ScriptProcessor on Electron
+        setVoiceFXEffect('none')
+        setVoiceFXParams({})
+        setVoiceFXEnabled(false)
+        restorePassthrough()
+        return
+      }
+    }
+
+    try {
+
     // Stop any oscillators BEFORE clearing nodes
     const nodes = voiceFXNodesRef.current
     const oscNames = [
@@ -403,8 +1608,8 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
     voiceFXNodesRef.current = {}
 
     // Reset gains and base routing
-    dryGain.disconnect()
-    wetGain.disconnect()
+    try { dryGain.disconnect() } catch {}
+    try { wetGain.disconnect() } catch {}
     try { source.disconnect(dryGain) } catch {}
     try { source.disconnect(wetGain) } catch {}
 
@@ -415,12 +1620,13 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       dryGain.gain.value = 1
       wetGain.gain.value = 0
       
-      // Replace with original track
-      const originalTrack = originalAudioTrackRef.current
-      if (originalTrack && localStreamRef.current) {
-        localStreamRef.current.getAudioTracks().forEach(t => localStreamRef.current.removeTrack(t))
-        localStreamRef.current.addTrack(originalTrack)
-        updateAllPeerTracks(voiceFXPreviewEnabled ? null : originalTrack)
+      // Keep a stable outbound sender track for Chromium/Electron.
+      const passthroughTrack = destination.stream.getAudioTracks()[0] || originalAudioTrackRef.current
+      if (passthroughTrack) {
+        passthroughTrack._senderTag = 'mic'
+        activeOutboundAudioTrackRef.current = passthroughTrack
+        activeOutboundAudioStreamRef.current = destination.stream
+        updateAllPeerTracks(voiceFXPreviewEnabled ? null : passthroughTrack)
       }
       console.log('[VoiceFX] Effect disabled, using original audio')
       return
@@ -441,7 +1647,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
     switch (effectName) {
       case 'pitch': {
         const pitchValue = Math.max(0.25, Math.min(4, effectParams.pitch || 1))
-        const sourceProcessor = audioContext.createScriptProcessor(4096, 1, 1)
+        const sourceProcessor = createProcessor(4096, 1, 1)
         const BUFFER_SIZE = 8192
         const buffer = new Float32Array(BUFFER_SIZE * 2)
         let writePos = 0
@@ -663,7 +1869,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         const baseGain = 1 - depth * 0.5
         lfoGain.gain.value = depth * 0.5
         
-        const processor = audioContext.createScriptProcessor(2048, 1, 1)
+        const processor = createProcessor(2048, 1, 1)
         let phase = 0
         const twoPi = Math.PI * 2
         
@@ -723,7 +1929,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         osc.type = 'square'
         osc.frequency.value = freq
         
-        const processor = audioContext.createScriptProcessor(2048, 1, 1)
+        const processor = createProcessor(2048, 1, 1)
         let phase = 0
         const twoPi = Math.PI * 2
         
@@ -764,7 +1970,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         osc.type = 'sine'
         osc.frequency.value = freq
         
-        const processor = audioContext.createScriptProcessor(2048, 1, 1)
+        const processor = createProcessor(2048, 1, 1)
         let phase = 0
         const twoPi = Math.PI * 2
         
@@ -825,7 +2031,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         compressor.attack.value = 0.005
         compressor.release.value = 0.1
         
-        const processor = audioContext.createScriptProcessor(2048, 1, 1)
+        const processor = createProcessor(2048, 1, 1)
         processor.onaudioprocess = (e) => {
           const input = e.inputBuffer.getChannelData(0)
           const output = e.outputBuffer.getChannelData(0)
@@ -850,7 +2056,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         break
       }
       case 'vocoder': {
-        const processor = audioContext.createScriptProcessor(4096, 1, 1)
+        const processor = createProcessor(4096, 1, 1)
         
         const bandFreqs = [300, 500, 700, 1000, 1400, 2000, 2800, 4000]
         
@@ -910,7 +2116,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         highpass.type = 'highpass'
         highpass.frequency.value = 300
         
-        const processor = audioContext.createScriptProcessor(2048, 1, 1)
+        const processor = createProcessor(2048, 1, 1)
         processor.onaudioprocess = (e) => {
           const input = e.inputBuffer.getChannelData(0)
           const output = e.outputBuffer.getChannelData(0)
@@ -961,7 +2167,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         highpass.frequency.value = 1000
         const noiseGain = audioContext.createGain()
         noiseGain.gain.value = Math.max(0, Math.min(0.3, airy * 0.25))
-        const noise = audioContext.createScriptProcessor(2048, 1, 1)
+        const noise = createProcessor(2048, 1, 1)
         noise.onaudioprocess = (e) => {
           const input = e.inputBuffer.getChannelData(0)
           const output = e.outputBuffer.getChannelData(0)
@@ -978,7 +2184,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       case 'demon': {
         const pitchValue = effectParams.pitch || 0.68
         const drive = effectParams.drive || 1.6
-        const pitchProcessor = audioContext.createScriptProcessor(4096, 1, 1)
+        const pitchProcessor = createProcessor(4096, 1, 1)
         const ringBuffer = new Float32Array(16384)
         let writePos = 0
         let readPos = 0
@@ -1004,7 +2210,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       }
       case 'helium': {
         const pitchValue = effectParams.pitch || 1.55
-        const processor = audioContext.createScriptProcessor(4096, 1, 1)
+        const processor = createProcessor(4096, 1, 1)
         const ringBuffer = new Float32Array(16384)
         let writePos = 0
         let readPos = 0
@@ -1107,7 +2313,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         const lowpass = audioContext.createBiquadFilter()
         lowpass.type = 'lowpass'
         lowpass.frequency.value = cutoff
-        const crusher = audioContext.createScriptProcessor(2048, 1, 1)
+        const crusher = createProcessor(2048, 1, 1)
         const step = Math.pow(0.5, bits)
         crusher.onaudioprocess = (e) => {
           const input = e.inputBuffer.getChannelData(0)
@@ -1154,17 +2360,21 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       console.warn('[VoiceFX] No processed track found in destination stream')
       return
     }
-    if (localStreamRef.current) {
-      // Replace in local stream
-      localStreamRef.current.getAudioTracks().forEach(t => localStreamRef.current.removeTrack(t))
-      localStreamRef.current.addTrack(processedTrack)
-      setLocalStream(localStreamRef.current)
-      
-      // Update all peer connections
-      updateAllPeerTracks(voiceFXPreviewEnabled ? null : processedTrack)
-    }
+    // Keep the original mic stream stable and only swap outbound sender tracks.
+    // Mutating localStream tracks can destabilize desktop webviews.
+    processedTrack._senderTag = 'mic'
+    activeOutboundAudioTrackRef.current = processedTrack
+    activeOutboundAudioStreamRef.current = destination.stream
+    updateAllPeerTracks(voiceFXPreviewEnabled ? null : processedTrack)
     
     console.log('[VoiceFX] Applied effect:', effectName)
+    } catch (err) {
+      console.error('[VoiceFX] Failed to apply effect. Falling back to none:', err)
+      setVoiceFXEffect('none')
+      setVoiceFXParams({})
+      setVoiceFXEnabled(false)
+      restorePassthrough()
+    }
   }, [voiceFXPreviewEnabled, updateAllPeerTracks])
 
   const handleVoiceFXPreviewToggle = useCallback((enabled) => {
@@ -1188,7 +2398,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       updateAllPeerTracks(null)
     } else {
       try { previewEl.pause() } catch {}
-      const activeTrack = localStreamRef.current?.getAudioTracks?.()[0] || originalAudioTrackRef.current || null
+      const activeTrack = activeOutboundAudioTrackRef.current || originalAudioTrackRef.current || null
       updateAllPeerTracks(activeTrack)
       // Re-apply current effect graph so peers always get a valid outbound sender track after preview mode.
       const effectName = voiceFXEnabled ? (voiceFXEffect || 'none') : 'none'
@@ -1217,16 +2427,22 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
   // Live settings — apply output volume + output device changes immediately
   useEffect(() => {
     const unsub = settingsService.subscribe((newSettings) => {
-      const vol = Math.max(0, Math.min(1, (newSettings.volume ?? 100) / 100))
+      const globalVol = Math.max(0, Math.min(1, (newSettings.volume ?? 100) / 100))
+      const globallyMuted = !!newSettings.muteAll || !!currentDeafened
       // Apply to all active remote audio elements
       Object.entries(audioElements.current).forEach(([key, el]) => {
         if (key.includes('__webaudio')) return
         if (el instanceof HTMLMediaElement) {
-          el.volume = vol
-          // Switch output device if supported (Chrome/Edge)
-          if (newSettings.outputDevice && newSettings.outputDevice !== 'default' && el.setSinkId) {
-            el.setSinkId(newSettings.outputDevice).catch(() => {})
-          }
+          const userId = key.includes('__') ? key.split('__')[0] : key
+          const userVol = Math.max(0, Math.min(1, ((localUserSettings[userId]?.volume ?? 100) / 100)))
+          el.volume = globalVol * userVol
+          const isScreen = key.includes('__screen')
+          const userMuted = isScreen
+            ? !!localUserSettings[userId]?.screenShareMuted
+            : !!localUserSettings[userId]?.muted
+          el.muted = globallyMuted || userMuted
+          // Keep sink in sync with settings, including explicit default fallback.
+          applyOutputDevice(el, newSettings.outputDevice)
         }
       })
       // Apply input volume via gain node if available
@@ -1235,7 +2451,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       }
     })
     return unsub
-  }, [])
+  }, [applyOutputDevice, localUserSettings, currentDeafened])
 
   // When externalDeafened changes (e.g. from sidebar button), apply audio muting
   useEffect(() => {
@@ -1271,6 +2487,44 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
     screenStreamRef.current = screenStream
   }, [screenStream])
 
+  useEffect(() => {
+    if (!channel?.id) {
+      setCameraOverlays([])
+      setScreenOverlays([])
+      setOverlayTarget('camera')
+      setOverlayStorageChannelId(null)
+      return
+    }
+    const stored = loadVoiceOverlayState(channel.id)
+    setCameraOverlays(stored.camera)
+    setScreenOverlays(stored.screen)
+    setOverlayTarget(stored.target)
+    setOverlayStorageChannelId(channel.id)
+  }, [channel?.id])
+
+  useEffect(() => {
+    if (!channel?.id || overlayStorageChannelId !== channel.id) return
+    saveVoiceOverlayState(channel.id, {
+      camera: cameraOverlays,
+      screen: screenOverlays,
+      target: overlayTarget
+    })
+  }, [cameraOverlays, channel?.id, overlayStorageChannelId, overlayTarget, screenOverlays])
+
+  useEffect(() => {
+    if (!isVideoOn || !rawLocalVideoStreamRef.current) return
+    const nextStream = buildOverlayCompositeStream('camera', rawLocalVideoStreamRef.current, cameraOverlays)
+    setLocalVideoStream(nextStream)
+    publishCameraStream(nextStream, { renegotiate: false }).catch(() => {})
+  }, [cameraOverlays, buildOverlayCompositeStream, isVideoOn])
+
+  useEffect(() => {
+    if (!isScreenSharing || !rawScreenStreamRef.current) return
+    const nextStream = buildOverlayCompositeStream('screen', rawScreenStreamRef.current, screenOverlays)
+    setScreenStream(nextStream)
+    publishScreenStream(nextStream, { renegotiate: false }).catch(() => {})
+  }, [screenOverlays, buildOverlayCompositeStream, isScreenSharing])
+
   // Determine if we are the "polite" peer — lower user ID loses a collision
   const isPolite = useCallback((remoteId) => {
     return (user?.id || '') < remoteId
@@ -1305,9 +2559,17 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
   const connectionQueueRef = useRef([])      // Queue of peer IDs waiting to connect
   const isProcessingQueueRef = useRef(false) // Whether currently processing queue
   const activeNegotiationsRef = useRef(0)    // Current active negotiations
+  const activeNegotiationPeersRef = useRef(new Set())
   const connectionCooldownsRef = useRef(new Map()) // peerId -> timestamp of last attempt
   const isMassJoinInProgressRef = useRef(false) // Flag for batch processing
   const pendingPeerCountRef = useRef(0)      // Track expected peer count during mass joins
+  const trackedTimeoutsRef = useRef(new Set())
+  const connectionAttemptTimersRef = useRef(new Map())
+  const participantRemovalTimersRef = useRef(new Map())
+  const negotiationReleaseTimersRef = useRef(new Map())
+  const peerDisconnectedAtRef = useRef(new Map()) // peerId -> timestamp when disconnected state was first observed
+  const peerReconnectStateRef = useRef(new Map()) // peerId -> { attempts, nextAllowedAt, lastReason }
+  const forcedInitiatorPeersRef = useRef(new Set()) // peers allowed to bypass owner rule temporarily
 
   // Tiered configuration for scaling to 100+ peers
   const TIER_CONFIG = {
@@ -1319,6 +2581,218 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
 
   // No peer limit - allow all connections
   const priorityPeersRef = useRef(new Set()) // High priority peer IDs (speakers)
+
+  const shouldInitiatePeerConnection = useCallback((peerId, { force = false } = {}) => {
+    if (!peerId || peerId === user?.id) return false
+    if (force || forcedInitiatorPeersRef.current.has(peerId)) return true
+    // Only one side proactively offers to avoid full-mesh offer collisions.
+    // The impolite peer (higher stable ID) initiates; the polite peer answers.
+    return !isPolite(peerId)
+  }, [isPolite, user?.id])
+
+  const getPeerPriorityScore = useCallback((peerId) => {
+    const participant = participantsRef.current.find((entry) => entry?.id === peerId)
+    let score = 0
+    if (priorityPeersRef.current.has(peerId)) score += 1000
+    if (participant?.isScreenSharing) score += 600
+    if (participant?.hasVideo) score += 200
+    const reconnectState = peerReconnectStateRef.current.get(peerId)
+    if (reconnectState?.attempts) score -= reconnectState.attempts * 25
+    return score
+  }, [])
+
+  const sortConnectionQueue = useCallback(() => {
+    const uniquePeerIds = [...new Set(connectionQueueRef.current)]
+    uniquePeerIds.sort((left, right) => {
+      const scoreDelta = getPeerPriorityScore(right) - getPeerPriorityScore(left)
+      if (scoreDelta !== 0) return scoreDelta
+      return String(left).localeCompare(String(right))
+    })
+    connectionQueueRef.current = uniquePeerIds
+  }, [getPeerPriorityScore])
+
+  const clearPeerReconnectState = useCallback((peerId) => {
+    peerReconnectStateRef.current.delete(peerId)
+    forcedInitiatorPeersRef.current.delete(peerId)
+  }, [])
+
+  const getReconnectDelayMs = useCallback((peerId, reason = 'retry') => {
+    const current = peerReconnectStateRef.current.get(peerId) || { attempts: 0, nextAllowedAt: 0, lastReason: null }
+    const attempts = Math.min(current.attempts + 1, 6)
+    const tier = getTierConfig()
+    const multiplier = reason === 'failed' ? 2.4 : reason === 'closed' ? 2.1 : 1.7
+    const baseDelay = Math.max(1200, tier.cooldown)
+    const jitter = Math.floor(Math.random() * 700)
+    const delay = Math.min(30000, Math.round(baseDelay * (multiplier ** attempts) + jitter))
+    peerReconnectStateRef.current.set(peerId, {
+      attempts,
+      nextAllowedAt: Date.now() + delay,
+      lastReason: reason
+    })
+    return delay
+  }, [getTierConfig])
+
+  const clearTrackedTimeout = useCallback((timeoutId) => {
+    if (!timeoutId) return
+    clearTimeout(timeoutId)
+    trackedTimeoutsRef.current.delete(timeoutId)
+  }, [])
+
+  const scheduleTrackedTimeout = useCallback((fn, delay) => {
+    let timeoutId = null
+    timeoutId = setTimeout(() => {
+      trackedTimeoutsRef.current.delete(timeoutId)
+      fn()
+    }, delay)
+    trackedTimeoutsRef.current.add(timeoutId)
+    return timeoutId
+  }, [])
+
+  const cancelConnectionAttempt = useCallback((peerId) => {
+    const timeoutId = connectionAttemptTimersRef.current.get(peerId)
+    if (!timeoutId) return
+    clearTrackedTimeout(timeoutId)
+    connectionAttemptTimersRef.current.delete(peerId)
+  }, [clearTrackedTimeout])
+
+  const cancelPendingPeerRemoval = useCallback((peerId) => {
+    const timeoutId = participantRemovalTimersRef.current.get(peerId)
+    if (!timeoutId) return
+    clearTrackedTimeout(timeoutId)
+    participantRemovalTimersRef.current.delete(peerId)
+  }, [clearTrackedTimeout])
+
+  const releaseNegotiationSlot = useCallback((peerId) => {
+    const releaseTimer = negotiationReleaseTimersRef.current.get(peerId)
+    if (releaseTimer) {
+      clearTrackedTimeout(releaseTimer)
+      negotiationReleaseTimersRef.current.delete(peerId)
+    }
+    if (!activeNegotiationPeersRef.current.has(peerId)) return
+    activeNegotiationPeersRef.current.delete(peerId)
+    activeNegotiationsRef.current = Math.max(0, activeNegotiationsRef.current - 1)
+  }, [clearTrackedTimeout])
+
+  const reserveNegotiationSlot = useCallback((peerId, fallbackDelay = 6500) => {
+    if (activeNegotiationPeersRef.current.has(peerId)) return
+    activeNegotiationPeersRef.current.add(peerId)
+    activeNegotiationsRef.current += 1
+    const timerId = scheduleTrackedTimeout(() => {
+      releaseNegotiationSlot(peerId)
+    }, fallbackDelay)
+    negotiationReleaseTimersRef.current.set(peerId, timerId)
+  }, [releaseNegotiationSlot, scheduleTrackedTimeout])
+
+  const clearAllScheduledVoiceTimers = useCallback(() => {
+    trackedTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId))
+    trackedTimeoutsRef.current.clear()
+    connectionAttemptTimersRef.current.clear()
+    participantRemovalTimersRef.current.clear()
+    negotiationReleaseTimersRef.current.clear()
+    activeNegotiationPeersRef.current.clear()
+    activeNegotiationsRef.current = 0
+    forcedInitiatorPeersRef.current.clear()
+  }, [])
+
+  const cleanupRemotePeerMedia = useCallback((userId) => {
+    ;[userId, `${userId}__screen`].forEach(audioKey => {
+      const el = audioElements.current[audioKey]
+      if (!(el instanceof HTMLMediaElement)) return
+      try { el.pause() } catch {}
+      el.srcObject = null
+      if (el.parentNode) el.parentNode.removeChild(el)
+      delete audioElements.current[audioKey]
+    })
+    try { audioElements.current[`${userId}__webaudio_source`]?.disconnect() } catch {}
+    try { audioElements.current[`${userId}__webaudio_gain`]?.disconnect() } catch {}
+    delete audioElements.current[`${userId}__webaudio_source`]
+    delete audioElements.current[`${userId}__webaudio_gain`]
+    delete audioElements.current[`${userId}__webaudio_ctx`]
+    delete remoteStreams.current[userId]
+
+    if (remoteAnalysersRef.current[userId]) {
+      try {
+        remoteAnalysersRef.current[userId].audioContext?.close()?.catch(() => {})
+      } catch {}
+      delete remoteAnalysersRef.current[userId]
+    }
+
+    setSpeaking(prev => {
+      if (!prev[userId]) return prev
+      const next = { ...prev }
+      delete next[userId]
+      return next
+    })
+
+    setVideoStreams(prev => {
+      if (!prev[userId]) return prev
+      const next = { ...prev }
+      delete next[userId]
+      return next
+    })
+  }, [])
+
+  const cleanupPeerConnectionState = useCallback((userId) => {
+    cancelConnectionAttempt(userId)
+    cancelPendingPeerRemoval(userId)
+    releaseNegotiationSlot(userId)
+    connectionQueueRef.current = connectionQueueRef.current.filter(id => id !== userId)
+    connectionCooldownsRef.current.delete(userId)
+    clearPeerReconnectState(userId)
+    priorityPeersRef.current.delete(userId)
+    delete makingOfferRef.current[userId]
+    delete ignoreOfferRef.current[userId]
+    delete remoteDescSetRef.current[userId]
+    delete pendingCandidatesRef.current[userId]
+    delete lastOfferTimeRef.current[userId]
+    delete negotiationLockRef.current[userId]
+    delete negotiationCompleteRef.current[userId]
+    delete signalChainRef.current[userId]
+    delete isSettingRemoteAnswerPendingRef.current[userId]
+  }, [cancelConnectionAttempt, cancelPendingPeerRemoval, releaseNegotiationSlot, clearPeerReconnectState])
+
+  const hardRemovePeer = useCallback((userId, { playSound = false } = {}) => {
+    if (!userId) return
+    cancelPendingPeerRemoval(userId)
+    cleanupPeerConnectionState(userId)
+    if (peerConnections.current[userId]) {
+      try { peerConnections.current[userId].close() } catch {}
+      delete peerConnections.current[userId]
+    }
+    cleanupRemotePeerMedia(userId)
+    setParticipants(prev => prev.filter(p => p?.id !== userId))
+    setPeerStates(prev => {
+      if (!(userId in prev)) return prev
+      const next = { ...prev }
+      delete next[userId]
+      return next
+    })
+    if (playSound) {
+      soundService.userLeft()
+    }
+  }, [cancelPendingPeerRemoval, cleanupPeerConnectionState, cleanupRemotePeerMedia])
+
+  const schedulePeerRemoval = useCallback((userId, delay, options = {}) => {
+    if (!userId || userId === user?.id) return
+    cancelPendingPeerRemoval(userId)
+    const timeoutId = scheduleTrackedTimeout(() => {
+      participantRemovalTimersRef.current.delete(userId)
+      hardRemovePeer(userId, options)
+    }, delay)
+    participantRemovalTimersRef.current.set(userId, timeoutId)
+  }, [cancelPendingPeerRemoval, hardRemovePeer, scheduleTrackedTimeout, user?.id])
+
+  const cleanupAllVideoElements = useCallback(() => {
+    Object.entries(videoElements.current).forEach(([, node]) => {
+      if (node && node.pause) {
+        node.pause()
+        node.srcObject = null
+        if (node.parentNode) node.parentNode.removeChild(node)
+      }
+    })
+    videoElements.current = {}
+    setVideoStreams({})
+  }, [])
 
   const createPeerConnection = useCallback((targetUserId) => {
     // Destroy stale closed/failed connection before creating a new one
@@ -1335,9 +2809,18 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
     remoteDescSetRef.current[targetUserId]  = false
     pendingCandidatesRef.current[targetUserId] = []
     negotiationCompleteRef.current[targetUserId] = false
+    isSettingRemoteAnswerPendingRef.current[targetUserId] = false
+    signalChainRef.current[targetUserId] = undefined // Clear any pending signal chain
 
-    const pc = new RTCPeerConnection(buildPeerConfig(serverIceServersRef.current))
+    const pc = new RTCPeerConnection(buildPeerConfig(serverIceServersRef.current, encryptionEnabledRef.current))
     peerConnections.current[targetUserId] = pc
+
+    // Chrome requires transceivers to exist before negotiation - prevents stalls
+    // Only add video transceiver if video is enabled
+    ensureTransceivers(pc, isVideoOn)
+    
+    // Set codec preferences for Chrome - prevents black video
+    setCodecPreferences(pc)
 
     // --- ICE candidates ---
     pc.onicecandidate = (event) => {
@@ -1358,7 +2841,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       if (pc.iceConnectionState === 'disconnected') {
         // Browser may recover on its own; give it 4 s then restart ICE
         const pcAtCheck = pc
-        setTimeout(() => {
+        scheduleTrackedTimeout(() => {
           if (pcAtCheck.iceConnectionState === 'disconnected' ||
               pcAtCheck.iceConnectionState === 'failed') {
             console.log(`[WebRTC] ICE still disconnected for ${targetUserId} — restarting`)
@@ -1403,6 +2886,18 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       console.log(`[WebRTC] ICE gathering with ${targetUserId}:`, pc.iceGatheringState)
     }
 
+    const getBestInboundAudioTrack = () => {
+      try {
+        const audioTracks = (pc.getReceivers?.() || [])
+          .map(r => r?.track)
+          .filter(t => t?.kind === 'audio' && t.readyState === 'live')
+        if (!audioTracks.length) return null
+        return audioTracks.find(t => !t.muted) || audioTracks[0]
+      } catch {
+        return null
+      }
+    }
+
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState
       console.log(`[WebRTC] Connection state with ${targetUserId}:`, s)
@@ -1412,8 +2907,12 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
 
       // Report peer state to server for consensus monitoring
       reportPeerState(targetUserId, s)
+      if (s === 'connected' || s === 'failed' || s === 'closed') {
+        releaseNegotiationSlot(targetUserId)
+      }
 
       if (s === 'connected') {
+        clearPeerReconnectState(targetUserId)
         applyReceiverLatencyHints(pc, targetUserId)
         const receivers = pc.getReceivers()
         receivers.forEach(r => {
@@ -1427,9 +2926,8 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         // creates a new RTCPeerConnection after a collision, and ontrack fires
         // again — but also the case where it doesn't because receivers were
         // inherited from the old PC.
-        const audioReceiver = receivers.find(r => r.track?.kind === 'audio')
-        if (audioReceiver) {
-          const track = audioReceiver.track
+        const track = getBestInboundAudioTrack()
+        if (track) {
           const stream = new MediaStream([track])
           const isScreenAudio = isLikelyScreenAudioTrack(targetUserId, track, stream)
           const audioKey = isScreenAudio ? `${targetUserId}__screen` : targetUserId
@@ -1441,13 +2939,20 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
             audio.style.cssText = 'position:absolute;width:0;height:0;pointer-events:none;opacity:0'
             document.body.appendChild(audio)
             audioElements.current[audioKey] = audio
+            
+            // Set output device immediately for Chromium/Electron
+            const initSettings = settingsService.getSettings()
+            applyOutputDevice(audio, initSettings.outputDevice)
+            
             console.log(`[WebRTC] Created ${isScreenAudio ? 'screen-share' : 'voice'} audio element on connect for ${targetUserId}`)
           }
 
           const settings = settingsService.getSettings()
+          const userVolume = Math.max(0, Math.min(1, ((localSettings.volume ?? 100) / 100)))
+          const globallyMuted = !!settings.muteAll || !!currentDeafened
           audio.srcObject = stream
-          audio.volume = Math.max(0, Math.min(1, (settings.volume ?? 100) / 100))
-          audio.muted = isScreenAudio ? !!localSettings.screenShareMuted : !!localSettings.muted
+          audio.volume = Math.max(0, Math.min(1, (settings.volume ?? 100) / 100)) * userVolume
+          audio.muted = globallyMuted || (isScreenAudio ? !!localSettings.screenShareMuted : !!localSettings.muted)
 
           console.log(`[WebRTC] Audio element on connect: paused=${audio.paused} volume=${audio.volume} trackMuted=${track.muted}`)
 
@@ -1489,9 +2994,17 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         if (videoReceiver && videoReceiver.track) {
           const videoTrack = videoReceiver.track
           console.log(`[WebRTC] Found video track for ${targetUserId} on connect: readyState=${videoTrack.readyState}`)
-          const clearRecoveredVideo = () => clearRemoteVideoState(targetUserId)
-          videoTrack.onended = clearRecoveredVideo
-          videoTrack.onmute = clearRecoveredVideo
+          videoTrack.onended = () => {
+            clearRemoteVideoMuteTimer(targetUserId)
+            clearRemoteVideoState(targetUserId)
+          }
+          videoTrack.onmute = () => {
+            console.log(`[WebRTC] Video track muted for ${targetUserId}, waiting before clear`)
+            scheduleRemoteVideoMuteClear(targetUserId, videoTrack)
+          }
+          videoTrack.onunmute = () => {
+            clearRemoteVideoMuteTimer(targetUserId)
+          }
           
           if (videoTrack.readyState === 'live') {
             let videoStream = remoteStreams.current[targetUserId]
@@ -1528,13 +3041,21 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         }
       }
       if (s === 'failed') {
-        console.log(`[WebRTC] Connection failed with ${targetUserId} — will wait for peer to reconnect`)
-        // Don't auto-reconnect - the peer who initiated will retry, or we'll get an offer from them
+        upsertVoiceIssue(buildVoiceIssue(
+          'peer-connectivity',
+          'warning',
+          'Some peers could not connect',
+          `The WebRTC link to ${targetUserId} failed.`,
+          'Open connection details for diagnostics. If this keeps happening, try another network or enable TURN on the server.',
+          'details'
+        ))
+        console.log(`[WebRTC] Connection failed with ${targetUserId} — scheduling controlled reconnect`)
         try { pc.close() } catch {}
         delete peerConnections.current[targetUserId]
         makingOfferRef.current[targetUserId] = false
         ignoreOfferRef.current[targetUserId] = false
         remoteDescSetRef.current[targetUserId] = false
+        schedulePeerReconnectRef.current?.(targetUserId, 'failed')
       }
       // Handle 'new' state that gets stuck - just restart ICE
       if (s === 'new') {
@@ -1543,7 +3064,12 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       }
       if (s === 'closed') {
         delete peerConnections.current[targetUserId]
-        setTimeout(() => {
+        const hasFailedPeers = Object.values(peerConnections.current).some(peer => peer?.connectionState === 'failed')
+        if (!hasFailedPeers) {
+          clearVoiceIssue('peer-connectivity')
+        }
+        schedulePeerReconnectRef.current?.(targetUserId, 'closed')
+        scheduleTrackedTimeout(() => {
           setPeerStates(prev => {
             const next = { ...prev }
             delete next[targetUserId]
@@ -1554,40 +3080,58 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
     }
 
     // --- Perfect negotiation: onnegotiationneeded ---
-    // This fires when tracks are added/removed. We need to handle both initial
-    // negotiation and track-change renegotiations.
-    pc.onnegotiationneeded = async () => {
-      // Skip if offer already in flight
-      if (makingOfferRef.current[targetUserId]) {
-        console.log(`[WebRTC] Skipping onnegotiationneeded for ${targetUserId} — offer in flight`)
-        return
-      }
-      // Skip if not in stable state (e.g. waiting for an answer)
-      if (pc.signalingState !== 'stable') {
-        console.log(`[WebRTC] Skipping onnegotiationneeded for ${targetUserId} — state: ${pc.signalingState}`)
-        return
-      }
-      try {
-        makingOfferRef.current[targetUserId] = true
-        const offer = await pc.createOffer()
-        // Re-check state after async createOffer — may have changed
-        if (pc.signalingState !== 'stable') {
-          console.log(`[WebRTC] Aborting offer for ${targetUserId} — state changed to ${pc.signalingState}`)
+    // Uses per-peer queue to serialize negotiations and prevent dropped offers
+    pc.onnegotiationneeded = () => {
+      enqueueSignal(targetUserId, async () => {
+        // Skip if offer already in flight
+        if (makingOfferRef.current[targetUserId]) {
+          console.log(`[WebRTC] Skipping onnegotiationneeded for ${targetUserId} — offer in flight`)
           return
         }
-        await pc.setLocalDescription(offer)
-        socket?.emit('voice:offer', {
-          to: targetUserId,
-          offer: pc.localDescription,
-          channelId: channelIdRef.current
-        })
-        console.log(`[WebRTC] Sent offer to ${targetUserId} (connectionState: ${pc.connectionState})`)
-        negotiationCompleteRef.current[targetUserId] = true
-      } catch (err) {
-        console.error(`[WebRTC] onnegotiationneeded error for ${targetUserId}:`, err.message)
-      } finally {
-        makingOfferRef.current[targetUserId] = false
-      }
+        // Skip if not in stable state (e.g. waiting for an answer)
+        if (pc.signalingState !== 'stable') {
+          console.log(`[WebRTC] Skipping onnegotiationneeded for ${targetUserId} — state: ${pc.signalingState}`)
+          return
+        }
+        // Skip if we're currently setting a remote answer (Chrome timing fix)
+        if (isSettingRemoteAnswerPendingRef.current[targetUserId]) {
+          console.log(`[WebRTC] Skipping onnegotiationneeded for ${targetUserId} — setting remote answer`)
+          return
+        }
+
+        try {
+          makingOfferRef.current[targetUserId] = true
+          
+          // Chrome timing bug fix: wait one microtask before createOffer
+          // This avoids Chrome firing onnegotiationneeded twice
+          await Promise.resolve()
+          
+          const offer = await pc.createOffer()
+          const patchedOffer = {
+            ...offer,
+            sdp: preferOpusInSdp(offer.sdp)
+          }
+          
+          // Re-check state after async createOffer — may have changed
+          if (pc.signalingState !== 'stable') {
+            console.log(`[WebRTC] Aborting offer for ${targetUserId} — state changed to ${pc.signalingState}`)
+            return
+          }
+          
+          await pc.setLocalDescription(patchedOffer)
+          socket?.emit('voice:offer', {
+            to: targetUserId,
+            offer: pc.localDescription,
+            channelId: channelIdRef.current
+          })
+          console.log(`[WebRTC] Sent offer to ${targetUserId} (connectionState: ${pc.connectionState})`)
+          negotiationCompleteRef.current[targetUserId] = true
+        } catch (err) {
+          console.error(`[WebRTC] onnegotiationneeded error for ${targetUserId}:`, err.message)
+        } finally {
+          makingOfferRef.current[targetUserId] = false
+        }
+      })
     }
 
     // --- Incoming tracks ---
@@ -1615,11 +3159,19 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       }
 
       if (track.kind === 'audio') {
+        // CRITICAL FIX: Use the track from the event or remoteStream, NOT from getBestInboundAudioTrack
+        // The event.track is the actual track that was just received via ontrack
+        // Using getBestInboundAudioTrack can return a different (muted) track from another receiver
+        const selectedTrack = track
+        console.log(`[WebRTC] Using event track for ${targetUserId}: id=${selectedTrack.id} muted=${selectedTrack.muted}`)
+        
         const settings = settingsService.getSettings()
-        console.log(`[WebRTC] Audio track: readyState=${track.readyState} trackMuted=${track.muted} enabled=${track.enabled} volume=${settings.volume}`)
-        const isScreenAudio = isLikelyScreenAudioTrack(targetUserId, track, remoteStream)
+        console.log(`[WebRTC] Audio track: readyState=${selectedTrack.readyState} trackMuted=${selectedTrack.muted} enabled=${selectedTrack.enabled} volume=${settings.volume}`)
+        const isScreenAudio = isLikelyScreenAudioTrack(targetUserId, selectedTrack, remoteStream)
         const audioKey = isScreenAudio ? `${targetUserId}__screen` : targetUserId
         const localSettings = localUserSettings[targetUserId] || { muted: false, volume: 100, screenShareMuted: false }
+        const userVolume = Math.max(0, Math.min(1, ((localSettings.volume ?? 100) / 100)))
+        const globallyMuted = !!settings.muteAll || !!currentDeafened
 
         // Create or reuse a DOM-attached audio element.
         // DOM-attached elements satisfy autoplay policy and persist.
@@ -1630,19 +3182,44 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
           audio.style.cssText = 'position:absolute;width:0;height:0;pointer-events:none;opacity:0'
           document.body.appendChild(audio)
           audioElements.current[audioKey] = audio
+          
+          // Set output device immediately for Chromium/Electron
+          const initSettings = settingsService.getSettings()
+          applyOutputDevice(audio, initSettings.outputDevice)
+          
           console.log(`[WebRTC] Created DOM ${isScreenAudio ? 'screen-share' : 'voice'} audio element for ${targetUserId}`)
         }
 
-        const audioStream = new MediaStream([track])
-        audio.srcObject = audioStream
-        audio.volume    = Math.max(0, Math.min(1, (settings.volume ?? 100) / 100))
-        audio.muted     = isScreenAudio ? !!localSettings.screenShareMuted : !!localSettings.muted
+        const existingTrack = audio.srcObject?.getAudioTracks?.()[0] || null
+        const existingPlayable = !!(existingTrack && existingTrack.readyState === 'live' && !existingTrack.muted)
+        const incomingPlayable = !!(selectedTrack.readyState === 'live' && !selectedTrack.muted)
 
-        console.log(`[WebRTC] Audio element: volume=${audio.volume} trackMuted=${track.muted}`)
+        // Chrome/Electron can expose duplicate inbound audio receivers.
+        // Never replace a currently playable track with a muted duplicate.
+        if (existingPlayable && !incomingPlayable && existingTrack?.id !== selectedTrack.id) {
+          console.log(`[WebRTC] Ignoring muted duplicate audio track for ${targetUserId}: ${selectedTrack.id}`)
+          selectedTrack.onunmute = () => {
+            const streamOnUnmute = new MediaStream([selectedTrack])
+            audio.srcObject = streamOnUnmute
+            audio.play().catch(() => {})
+          }
+          return
+        }
+
+        // Use a single-track stream for audio playback to avoid track conflicts
+        // but keep the analyser on the full remoteStream for speaking detection
+        const audioStream = new MediaStream([selectedTrack])
+        audio.srcObject = audioStream
+        audio.volume    = Math.max(0, Math.min(1, (settings.volume ?? 100) / 100)) * userVolume
+        audio.muted     = globallyMuted || (isScreenAudio ? !!localSettings.screenShareMuted : !!localSettings.muted)
+
+        console.log(`[WebRTC] Audio element: volume=${audio.volume} trackMuted=${selectedTrack.muted}`)
 
         // Helper — call play() and retry on autoplay rejection
         const tryPlay = () => {
-          if (audio.srcObject !== remoteStream) audio.srcObject = remoteStream
+          // Keep playback on a dedicated single-track stream.
+          // Using the shared remoteStream can include multiple audio tracks after renegotiation.
+          if (audio.srcObject !== audioStream) audio.srcObject = audioStream
           audio.play().then(() => {
             console.log(`[WebRTC] play() OK for ${targetUserId} readyState=${audio.readyState}`)
           }).catch(err => {
@@ -1659,15 +3236,15 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
 
         // Always set onunmute — this is the correct trigger for when RTP
         // packets start flowing (track goes from receive-muted to live).
-        track.onunmute = () => {
+        selectedTrack.onunmute = () => {
           console.log(`[WebRTC] track.onunmute for ${targetUserId} — starting playback`)
           tryPlay()
         }
 
-        track.onended = () => console.log(`[WebRTC] track ended for ${targetUserId}`)
+        selectedTrack.onended = () => console.log(`[WebRTC] track ended for ${targetUserId}`)
 
         // Play immediately if track already has audio flowing.
-        if (!track.muted) {
+        if (!selectedTrack.muted) {
           console.log(`[WebRTC] Track already unmuted for ${targetUserId}`)
           tryPlay()
         }
@@ -1800,11 +3377,20 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         }))
 
         const handleRemoteVideoEnded = () => {
-          console.log(`[WebRTC] Video track ended/muted for ${targetUserId}, clearing UI state`)
+          clearRemoteVideoMuteTimer(targetUserId)
+          console.log(`[WebRTC] Video track ended for ${targetUserId}, clearing UI state`)
           clearRemoteVideoState(targetUserId)
         }
+        const handleRemoteVideoMuted = () => {
+          console.log(`[WebRTC] Video track muted for ${targetUserId}, waiting before clear`)
+          scheduleRemoteVideoMuteClear(targetUserId, track)
+        }
+        const handleRemoteVideoUnmuted = () => {
+          clearRemoteVideoMuteTimer(targetUserId)
+        }
         track.onended = handleRemoteVideoEnded
-        track.onmute = handleRemoteVideoEnded
+        track.onmute = handleRemoteVideoMuted
+        track.onunmute = handleRemoteVideoUnmuted
         
         console.log(`[WebRTC] ========== VIDEO TRACK PROCESSING COMPLETE for ${targetUserId} ==========`)
       }
@@ -1812,14 +3398,20 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
 
     // Add our local audio tracks
     const addTracks = () => {
-      const audioStream = localStreamRef.current
-      if (audioStream) {
-        audioStream.getTracks().forEach(track => {
-          const senders = pc.getSenders()
-          if (!senders.find(s => s.track === track)) {
-            pc.addTrack(track, audioStream)
-          }
-        })
+      const audioStream = activeOutboundAudioStreamRef.current || localStreamRef.current
+      const audioTrack = activeOutboundAudioTrackRef.current || audioStream?.getAudioTracks?.()[0]
+      if (audioStream && audioTrack) {
+        audioTrack._senderTag = 'mic'
+        const senders = pc.getSenders()
+        const existingAudioSender = senders.find(s => (
+          s.track?._senderTag === 'mic' ||
+          (s.track?.kind === 'audio' && s.track?._senderTag !== 'screen-audio')
+        ))
+        if (!existingAudioSender) {
+          pc.addTrack(audioTrack, audioStream)
+        } else if (existingAudioSender.track?.id !== audioTrack.id) {
+          existingAudioSender.replaceTrack(audioTrack).catch(() => {})
+        }
       }
       const videoStream = localVideoStreamRef.current
       if (videoStream) {
@@ -1844,7 +3436,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
     addTracks()
 
     return pc
-  }, [socket, user?.id, isPolite, clearRemoteVideoState, applyReceiverLatencyHints, isLikelyScreenAudioTrack, localUserSettings])
+  }, [socket, user?.id, isPolite, clearRemoteVideoState, clearRemoteVideoMuteTimer, scheduleRemoteVideoMuteClear, applyReceiverLatencyHints, isLikelyScreenAudioTrack, localUserSettings, upsertVoiceIssue, clearVoiceIssue, releaseNegotiationSlot, scheduleTrackedTimeout, clearPeerReconnectState])
 
   const initiateCall = useCallback((targetUserId) => {
     if (!targetUserId || targetUserId === user?.id) return
@@ -1853,13 +3445,11 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       const state = existing.connectionState
       // Already connected, connecting, or completed (wrtc uses 'completed') — skip
       if (state === 'connected' || state === 'connecting' || state === 'completed') {
-        activeNegotiationsRef.current = Math.max(0, activeNegotiationsRef.current - 1)
         return
       }
       // Offer already in flight for this peer — skip
       if (makingOfferRef.current[targetUserId]) {
         console.log('[WebRTC] Skipping initiateCall for', targetUserId, '— offer in flight')
-        activeNegotiationsRef.current = Math.max(0, activeNegotiationsRef.current - 1)
         return
       }
     }
@@ -1874,9 +3464,11 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
 
     const tier = getTierConfig()
     const maxConcurrent = tier.concurrent
+    sortConnectionQueue()
 
     while (connectionQueueRef.current.length > 0 && activeNegotiationsRef.current < maxConcurrent) {
       const targetUserId = connectionQueueRef.current.shift()
+      if (!targetUserId) continue
 
       // Double-check state before connecting
       const existing = peerConnections.current[targetUserId]
@@ -1888,23 +3480,21 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         }
       }
 
-      activeNegotiationsRef.current++
+      if (!shouldInitiatePeerConnection(targetUserId)) {
+        console.log(`[WebRTC] Skipping ${targetUserId} in queue — remote side owns initiation`)
+        continue
+      }
+
+      reserveNegotiationSlot(targetUserId)
       connectionCooldownsRef.current.set(targetUserId, Date.now())
 
       console.log(`[WebRTC] Processing connection to ${targetUserId} (${activeNegotiationsRef.current}/${maxConcurrent} active, tier: ${tier.maxPeers} max)`)
 
       try {
         initiateCall(targetUserId)
-        
-        // Decrement counter after a delay to allow negotiation to complete
-        setTimeout(() => {
-          activeNegotiationsRef.current = Math.max(0, activeNegotiationsRef.current - 1)
-          // Try to process more queued connections
-          processConnectionQueue()
-        }, 4000)
       } catch (err) {
         console.error(`[WebRTC] Error initiating connection to ${targetUserId}:`, err.message)
-        activeNegotiationsRef.current = Math.max(0, activeNegotiationsRef.current - 1)
+        releaseNegotiationSlot(targetUserId)
       }
 
       // Tiered delay between starting connections to prevent flooding
@@ -1917,13 +3507,14 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
 
     // If queue still has items, schedule another processing round
     if (connectionQueueRef.current.length > 0) {
-      setTimeout(() => processConnectionQueue(), tier.staggerBase)
+      scheduleTrackedTimeout(() => processConnectionQueue(), tier.staggerBase)
     }
-  }, [initiateCall, getTierConfig])
+  }, [initiateCall, getTierConfig, releaseNegotiationSlot, reserveNegotiationSlot, scheduleTrackedTimeout, sortConnectionQueue, shouldInitiatePeerConnection])
 
   // Queue a connection with tiered cooldown management for 100+ peer support
-  const queueConnection = useCallback((targetUserId) => {
+  const queueConnection = useCallback((targetUserId, options = {}) => {
     if (!targetUserId || targetUserId === user?.id) return
+    const { force = false, bypassBackoff = false } = options
 
     // Check capacity
     if (!canAcceptPeer(targetUserId)) {
@@ -1931,12 +3522,39 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       return
     }
 
+    if (!shouldInitiatePeerConnection(targetUserId, { force })) {
+      console.log(`[WebRTC] Waiting for ${targetUserId} to initiate (owner rule)`)
+      return
+    }
+
     // Check cooldown to prevent rapid reconnection attempts
     const tier = getTierConfig()
     const lastAttempt = connectionCooldownsRef.current.get(targetUserId)
     if (lastAttempt && Date.now() - lastAttempt < tier.cooldown) {
-      console.log(`[WebRTC] Connection to ${targetUserId} on cooldown, skipping`)
+      const retryIn = tier.cooldown - (Date.now() - lastAttempt) + 50
+      console.log(`[WebRTC] Connection to ${targetUserId} on cooldown, retrying in ${retryIn}ms`)
+      cancelConnectionAttempt(targetUserId)
+      const timeoutId = scheduleTrackedTimeout(() => {
+        connectionAttemptTimersRef.current.delete(targetUserId)
+        queueConnection(targetUserId)
+      }, retryIn)
+      connectionAttemptTimersRef.current.set(targetUserId, timeoutId)
       return
+    }
+
+    if (!bypassBackoff) {
+      const reconnectState = peerReconnectStateRef.current.get(targetUserId)
+      if (reconnectState?.nextAllowedAt && reconnectState.nextAllowedAt > Date.now()) {
+        const retryIn = reconnectState.nextAllowedAt - Date.now() + 50
+        console.log(`[WebRTC] Connection to ${targetUserId} in backoff, retrying in ${retryIn}ms`)
+        cancelConnectionAttempt(targetUserId)
+        const timeoutId = scheduleTrackedTimeout(() => {
+          connectionAttemptTimersRef.current.delete(targetUserId)
+          queueConnection(targetUserId, options)
+        }, retryIn)
+        connectionAttemptTimersRef.current.set(targetUserId, timeoutId)
+        return
+      }
     }
 
     // Check if already in queue
@@ -1956,18 +3574,24 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
     }
 
     connectionQueueRef.current.push(targetUserId)
+    sortConnectionQueue()
     console.log(`[WebRTC] Queued connection to ${targetUserId} (queue length: ${connectionQueueRef.current.length})`)
     processConnectionQueue()
-  }, [user?.id, canAcceptPeer, getTierConfig])
+  }, [user?.id, canAcceptPeer, shouldInitiatePeerConnection, getTierConfig, cancelConnectionAttempt, scheduleTrackedTimeout, sortConnectionQueue, processConnectionQueue])
 
   // Process large groups in batches to prevent overwhelming the system
   const processPeerBatches = useCallback((peerIds, tier) => {
     const batchSize = tier.batchSize
     const batches = []
+    const sortedPeerIds = [...peerIds].sort((left, right) => {
+      const scoreDelta = getPeerPriorityScore(right) - getPeerPriorityScore(left)
+      if (scoreDelta !== 0) return scoreDelta
+      return String(left).localeCompare(String(right))
+    })
     
     // Split into batches
-    for (let i = 0; i < peerIds.length; i += batchSize) {
-      batches.push(peerIds.slice(i, i + batchSize))
+    for (let i = 0; i < sortedPeerIds.length; i += batchSize) {
+      batches.push(sortedPeerIds.slice(i, i + batchSize))
     }
     
     console.log(`[WebRTC] Split ${peerIds.length} peers into ${batches.length} batches of ~${batchSize}`)
@@ -1976,7 +3600,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
     batches.forEach((batch, batchIndex) => {
       const batchDelay = batchIndex * 6000 // 6 seconds between batches
       
-      setTimeout(() => {
+      scheduleTrackedTimeout(() => {
         console.log(`[WebRTC] Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} peers)`)
         
         batch.forEach((peerId, index) => {
@@ -1991,12 +3615,17 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
           }
           
           const delay = tier.staggerBase + (index * tier.staggerPerPeer) + (Math.random() * 200)
-          setTimeout(() => queueConnection(peerId), delay)
+          cancelConnectionAttempt(peerId)
+          const timeoutId = scheduleTrackedTimeout(() => {
+            connectionAttemptTimersRef.current.delete(peerId)
+            queueConnection(peerId)
+          }, delay)
+          connectionAttemptTimersRef.current.set(peerId, timeoutId)
         })
         
         // Mark mass join complete after last batch
         if (batchIndex === batches.length - 1) {
-          setTimeout(() => {
+          scheduleTrackedTimeout(() => {
             isMassJoinInProgressRef.current = false
             pendingPeerCountRef.current = 0
             console.log('[WebRTC] Mass join processing complete')
@@ -2004,7 +3633,33 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         }
       }, batchDelay)
     })
-  }, [canAcceptPeer, queueConnection])
+  }, [canAcceptPeer, queueConnection, cancelConnectionAttempt, scheduleTrackedTimeout, getPeerPriorityScore])
+
+  const schedulePeerReconnect = useCallback((peerId, reason = 'retry', options = {}) => {
+    if (!peerId || peerId === user?.id) return
+    if (!participantsRef.current.some((entry) => entry?.id === peerId)) return
+
+    const { force = false, immediate = false } = options
+    if (!shouldInitiatePeerConnection(peerId, { force })) {
+      console.log(`[WebRTC] Not scheduling reconnect to ${peerId} (${reason}) — waiting for remote initiator`)
+      return
+    }
+
+    const delay = immediate ? Math.max(250, getTierConfig().staggerBase) : getReconnectDelayMs(peerId, reason)
+    if (force) forcedInitiatorPeersRef.current.add(peerId)
+
+    cancelConnectionAttempt(peerId)
+    const timeoutId = scheduleTrackedTimeout(() => {
+      connectionAttemptTimersRef.current.delete(peerId)
+      queueConnection(peerId, { force, bypassBackoff: force || immediate })
+    }, delay)
+    connectionAttemptTimersRef.current.set(peerId, timeoutId)
+    console.log(`[WebRTC] Scheduled reconnect to ${peerId} in ${delay}ms (${reason})`)
+  }, [user?.id, shouldInitiatePeerConnection, getTierConfig, getReconnectDelayMs, cancelConnectionAttempt, scheduleTrackedTimeout, queueConnection])
+
+  useEffect(() => {
+    schedulePeerReconnectRef.current = schedulePeerReconnect
+  }, [schedulePeerReconnect])
 
   useEffect(() => {
     if (!socket || !channel) return
@@ -2024,6 +3679,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
     // If we're joining a different channel, do full cleanup first
     if (hasJoinedRef.current && channelChanged) {
       console.log('[Voice] Channel changed, cleaning up previous session')
+      clearAllScheduledVoiceTimers()
       Object.values(peerConnections.current).forEach(pc => { try { pc.close() } catch {} })
       peerConnections.current = {}
       Object.entries(audioElements.current).forEach(([key, node]) => {
@@ -2038,6 +3694,8 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(t => t.stop())
         localStreamRef.current = null
+        activeOutboundAudioTrackRef.current = null
+        activeOutboundAudioStreamRef.current = null
       }
       if (analyserRef.current?.audioContext && analyserRef.current.audioContext.state !== 'closed') {
         analyserRef.current.audioContext.close().catch(() => {})
@@ -2050,7 +3708,11 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       pendingCandidatesRef.current = {}
       lastOfferTimeRef.current = {}
       negotiationLockRef.current = {}
+      signalChainRef.current = {}
+      isSettingRemoteAnswerPendingRef.current = {}
       serverIceServersRef.current = []
+      connectionQueueRef.current = []
+      connectionCooldownsRef.current = new Map()
       setLocalStream(null)
       setLocalVideoStream(null)
       setScreenStream(null)
@@ -2084,7 +3746,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
     const initVoice = async () => {
       const settings = settingsService.getSettings()
       
-      const tryGetMicrophone = async (deviceId) => {
+      const tryGetMic = async (deviceId) => {
         const constraints = {
           audio: {
             echoCancellation: settings.echoCancellation ?? true,
@@ -2099,12 +3761,12 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       try {
         let stream
         try {
-          stream = await tryGetMicrophone(settings.inputDevice)
+          stream = await tryGetMic(settings.inputDevice)
         } catch (err) {
           if (err.name === 'OverconstrainedError') {
             console.log('[Voice] Saved mic device not found, using default')
             settingsService.saveSettings({ ...settings, inputDevice: 'default' })
-            stream = await tryGetMicrophone(null)
+            stream = await tryGetMic(null)
           } else {
             throw err
           }
@@ -2119,6 +3781,13 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         
         setLocalStream(stream)
         localStreamRef.current = stream
+        setJoinedWithoutMic(false)
+        clearVoiceIssue('mic-fallback')
+        clearVoiceIssue('microphone-permission')
+        clearVoiceIssue('microphone-missing')
+        clearVoiceIssue('microphone-unavailable-device')
+        clearVoiceIssue('microphone-busy')
+        clearVoiceIssue('microphone-error')
         setConnectionState('connected')
         
         soundService.callConnected()
@@ -2148,6 +3817,12 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         // Store original audio track reference
         const audioTrack = stream.getAudioTracks()[0]
         originalAudioTrackRef.current = audioTrack
+        // Always send a stable VoiceFX destination track to peers.
+        // In "none" mode, graph is source -> dry -> destination passthrough.
+        const outboundTrack = voiceFXDestination.stream.getAudioTracks()[0] || audioTrack
+        outboundTrack._senderTag = 'mic'
+        activeOutboundAudioTrackRef.current = outboundTrack
+        activeOutboundAudioStreamRef.current = voiceFXDestination.stream
         
         // Apply robustly restored mute/deafen state to the mic track.
         const savedVoiceState = readPersistedVoiceState()
@@ -2188,8 +3863,30 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       } catch (err) {
         console.error('[Voice] Failed to get microphone:', err)
         if (!cancelled) {
-          setConnectionState('error')
-          soundService.error()
+          upsertVoiceIssue(diagnoseMediaError(err, 'microphone'))
+          upsertVoiceIssue(buildVoiceIssue(
+            'mic-fallback',
+            'warning',
+            'Connected without microphone',
+            'You can still hear the channel and use activities, but your microphone is unavailable right now.',
+            'Open Voice Settings to grant microphone access or choose another input device.',
+            'settings'
+          ))
+
+          setLocalStream(null)
+          localStreamRef.current = null
+          activeOutboundAudioTrackRef.current = null
+          activeOutboundAudioStreamRef.current = null
+          setJoinedWithoutMic(true)
+          hasJoinedRef.current = true
+          hasLeftRef.current = false
+          setConnectionState('connected')
+
+          socket.emit('voice:join', {
+            channelId: channel.id,
+            peerId: user.id
+          })
+          console.log('[Voice] Emitted voice:join fallback without microphone for channel:', channel.id)
         }
       } finally {
         isInitializingRef.current = false
@@ -2216,12 +3913,47 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       // Store ICE servers from server for subsequent peer connections
       if (data.iceServers?.length) serverIceServersRef.current = data.iceServers
       
-      const peerIds = (data.participants || [])
-        .filter(p => p.id !== user.id)
-        .map(p => p.id)
+      // Handle both formats: array of user objects OR array of peer IDs (strings)
+      const participantsData = (data.participants || [])
+      const processedParticipants = participantsData.map(p => {
+        // Handle both string IDs and user objects
+        if (typeof p === 'string') {
+          return { id: p, username: 'Unknown User', avatar: null }
+        }
+        // Validate the user object has required fields
+        if (!p || typeof p !== 'object') {
+          console.warn('[VoiceChannel] Skipping invalid participant:', p)
+          return null
+        }
+        if (!p.id) {
+          console.warn('[VoiceChannel] Skipping participant without id:', p)
+          return null
+        }
+        return { id: p.id, username: p.username || 'Unknown User', avatar: p.avatar || null }
+      }).filter(Boolean)
       
+      const peerIds = processedParticipants
+        .filter(p => p?.id !== user?.id)
+        .map(p => p?.id)
+        .filter(Boolean)
+        
       console.log(`[WebRTC] Received participants list: ${peerIds.length} peers —`, peerIds)
-      setParticipants(data.participants || [])
+      const validParticipants = processedParticipants.filter(p => p?.id)
+      const presentIds = new Set(validParticipants.map(p => p.id))
+      validParticipants.forEach(participant => cancelPendingPeerRemoval(participant.id))
+      setParticipants(prev => {
+        const previousById = new Map(prev.filter(p => p?.id).map(p => [p.id, p]))
+        const merged = validParticipants.map(participant => ({
+          ...(previousById.get(participant.id) || {}),
+          ...participant
+        }))
+        prev.forEach(existing => {
+          if (!existing?.id || presentIds.has(existing.id)) return
+          merged.push(existing)
+          schedulePeerRemoval(existing.id, 3500, { playSound: true })
+        })
+        return merged
+      })
       
       // Detect mass join scenario (>10 peers joining at once)
       if (peerIds.length > 10) {
@@ -2264,234 +3996,252 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
         
         // Skip if at capacity
         if (!canAcceptPeer(peerId)) return
+        if (!shouldInitiatePeerConnection(peerId)) return
         
         // Simple staggered connections - no retry spam
         const delay = baseDelay + (index * staggerMs) + (Math.random() * 300)
         console.log(`[WebRTC] Queuing connection to ${peerId} in ${Math.round(delay)}ms`)
-        setTimeout(() => queueConnection(peerId), delay)
+        cancelConnectionAttempt(peerId)
+        const timeoutId = scheduleTrackedTimeout(() => {
+          connectionAttemptTimersRef.current.delete(peerId)
+          queueConnection(peerId)
+        }, delay)
+        connectionAttemptTimersRef.current.set(peerId, timeoutId)
       })
     })
 
     // Simple user-joined handler - don't spam connections
+    // CRITICAL: Handle both string IDs and user objects to prevent crashes
     socket.on('voice:user-joined', (userInfo) => {
-      applyLowDelayModeToAllPeers()
-      setParticipants(prev => {
-        if (prev.find(p => p.id === userInfo.id)) return prev
-        return [...prev, userInfo]
-      })
-      if (userInfo.id !== user.id) {
-        soundService.userJoined()
+      try {
+        // Normalize: handle both string IDs and user objects
+        const normalizedUser = typeof userInfo === 'string' 
+          ? { id: userInfo, username: 'Unknown User', avatar: null }
+          : (userInfo?.id ? userInfo : null)
         
-        // Check if already connected - don't reconnect if we already have a good connection
-        const existing = peerConnections.current[userInfo.id]
-        if (existing) {
-          const s = existing.connectionState
-          if (s === 'connected' || s === 'completed') {
-            console.log(`[WebRTC] Already connected to ${userInfo.id}, skipping`)
-            return
-          }
-          if (s === 'connecting' || s === 'new') {
-            console.log(`[WebRTC] Already connecting to ${userInfo.id}, skipping`)
-            return
-          }
-          // If failed/closed, will try to reconnect below
-        }
-        
-        // Check capacity before connecting
-        if (!canAcceptPeer(userInfo.id)) {
-          console.log(`[WebRTC] Cannot accept peer ${userInfo.id}: at capacity`)
+        if (!normalizedUser?.id) {
+          console.warn('[VoiceChannel] Invalid userInfo in voice:user-joined:', userInfo)
           return
         }
         
-        // Simple delay - no retry spam
-        const tier = getTierConfig()
-        const delay = 800 + Math.random() * 400
-        console.log(`[WebRTC] Scheduling connection to new peer ${userInfo.id} in ${Math.round(delay)}ms`)
-        setTimeout(() => queueConnection(userInfo.id), delay)
+        const userId = normalizedUser.id
+        
+        applyLowDelayModeToAllPeers()
+        cancelPendingPeerRemoval(userId)
+        // Clear the reconnecting flag if it was set by voice:user-left
+        setParticipants(prev => {
+          const existingIndex = prev.findIndex(p => p?.id === userId)
+          if (existingIndex === -1) return [...prev, normalizedUser]
+          const next = [...prev]
+          next[existingIndex] = { ...prev[existingIndex], ...normalizedUser, isReconnecting: false }
+          return next
+        })
+        
+        if (userId !== user?.id) {
+          soundService.userJoined()
+          
+          // Check if already connected - don't reconnect if we already have a good connection
+          const existing = peerConnections.current[userId]
+          if (existing) {
+            const s = existing.connectionState
+            if (s === 'connected' || s === 'completed') {
+              console.log(`[WebRTC] Already connected to ${userId}, skipping`)
+              return
+            }
+            if (s === 'connecting' || s === 'new') {
+              console.log(`[WebRTC] Already connecting to ${userId}, skipping`)
+              return
+            }
+            // If failed/closed, will try to reconnect below
+          }
+          
+          // Check capacity before connecting
+          if (!canAcceptPeer(userId)) {
+            console.log(`[WebRTC] Cannot accept peer ${userId}: at capacity`)
+            return
+          }
+          if (!shouldInitiatePeerConnection(userId)) {
+            console.log(`[WebRTC] Waiting for ${userId} to initiate new peer connection`)
+            return
+          }
+          
+          // Simple delay - no retry spam
+          const tier = getTierConfig()
+          const delay = 800 + Math.random() * 400
+          console.log(`[WebRTC] Scheduling connection to new peer ${userId} in ${Math.round(delay)}ms`)
+          cancelConnectionAttempt(userId)
+          const timeoutId = scheduleTrackedTimeout(() => {
+            connectionAttemptTimersRef.current.delete(userId)
+            queueConnection(userId)
+          }, delay)
+          connectionAttemptTimersRef.current.set(userId, timeoutId)
+        }
+      } catch (err) {
+        console.error('[VoiceChannel] Error in voice:user-joined handler:', err)
       }
     })
 
     // Handle user reconnection - don't treat as new join, just reconnect WebRTC
+    // CRITICAL: Handle both string IDs and user objects to prevent crashes
     socket.on('voice:user-reconnected', (userInfo) => {
-      console.log(`[WebRTC] User reconnected: ${userInfo.id} (${userInfo.username})`)
-      applyLowDelayModeToAllPeers()
-      
-      // Update participants list (user was already there, just updating)
-      setParticipants(prev => prev.map(p => 
-        p.id === userInfo.id ? { ...p, ...userInfo } : p
-      ))
-      
-      // Don't play join sound for reconnections - they were never really gone
-      
-      if (userInfo.id !== user.id) {
-        // Check if we already have a connection to this peer
-        const existing = peerConnections.current[userInfo.id]
-        if (existing) {
-          const state = existing.connectionState
-          // If connection is still good, no need to reconnect
-          if (state === 'connected' || state === 'connecting' || state === 'completed') {
-            console.log(`[WebRTC] Already connected to reconnected peer ${userInfo.id}, no action needed`)
+      try {
+        // Normalize: handle both string IDs and user objects
+        const normalizedUser = typeof userInfo === 'string' 
+          ? { id: userInfo, username: 'Unknown User' }
+          : (userInfo?.id ? userInfo : null)
+        
+        if (!normalizedUser?.id) {
+          console.warn('[VoiceChannel] Invalid userInfo in voice:user-reconnected:', userInfo)
+          return
+        }
+        
+        console.log(`[WebRTC] User reconnected: ${normalizedUser.id} (${normalizedUser.username})`)
+        applyLowDelayModeToAllPeers()
+        cancelPendingPeerRemoval(normalizedUser.id)
+        
+        // Update participants list (user was already there, just updating)
+        setParticipants(prev => {
+          const existingIndex = prev.findIndex(p => p?.id === normalizedUser.id)
+          if (existingIndex === -1) {
+            return [...prev, normalizedUser]
+          }
+          const next = [...prev]
+          next[existingIndex] = { ...prev[existingIndex], ...normalizedUser }
+          return next
+        })
+        
+        // Don't play join sound for reconnections - they were never really gone
+        
+        if (normalizedUser.id !== user?.id) {
+          // Check if we already have a connection to this peer
+          const existing = peerConnections.current[normalizedUser.id]
+          if (existing) {
+            const state = existing.connectionState
+            // If connection is still good, no need to reconnect
+            if (state === 'connected' || state === 'connecting' || state === 'completed') {
+              console.log(`[WebRTC] Already connected to reconnected peer ${normalizedUser.id}, no action needed`)
+              return
+            }
+          }
+          if (!shouldInitiatePeerConnection(normalizedUser.id)) {
+            console.log(`[WebRTC] Waiting for ${normalizedUser.id} to initiate reconnection`)
             return
           }
+          
+          // Reconnect to the peer with a small delay
+          const delay = 500 + (Math.random() * 500)
+          console.log(`[WebRTC] Reconnecting to peer ${normalizedUser.id} in ${Math.round(delay)}ms`)
+          cancelConnectionAttempt(normalizedUser.id)
+          const timeoutId = scheduleTrackedTimeout(() => {
+            connectionAttemptTimersRef.current.delete(normalizedUser.id)
+            queueConnection(normalizedUser.id)
+          }, delay)
+          connectionAttemptTimersRef.current.set(normalizedUser.id, timeoutId)
         }
-        
-        // Reconnect to the peer with a small delay
-        const delay = 500 + (Math.random() * 500)
-        console.log(`[WebRTC] Reconnecting to peer ${userInfo.id} in ${Math.round(delay)}ms`)
-        setTimeout(() => queueConnection(userInfo.id), delay)
+      } catch (err) {
+        console.error('[VoiceChannel] Error in voice:user-reconnected handler:', err)
       }
     })
 
-    // Perfect negotiation — handle incoming offers
-    // FIX: Always process ALL offers regardless of collision to prevent deadlocks
-    // The original "ignore colliding offers when impolite" logic caused connection issues
-    // when both peers tried to connect simultaneously
-    socket.on('voice:offer', async (data) => {
+    // Perfect negotiation with per-peer queue - prevents dropped offers and "have-local-offer" stalls
+    // Uses the standard polite/impolite collision rule from https://webrtc.github.io/samples/
+    socket.on('voice:offer', (data) => {
       const { from, offer, channelId } = data
       if (channelId && channelId !== channelIdRef.current) return
-      
-      // Debounce rapid offers from the same peer (prevents loops)
-      const now = Date.now()
-      const lastOffer = lastOfferTimeRef.current[from] || 0
-      if (now - lastOffer < 300) {
-        console.log('[WebRTC] Debouncing rapid offer from', from)
-        return
-      }
-      lastOfferTimeRef.current[from] = now
-      
-      // Check if we're already in a negotiation with this peer
-      if (negotiationLockRef.current[from]) {
-        console.log('[WebRTC] Negotiation already in progress for', from, '- queuing offer')
-        // Queue this offer for later instead of ignoring
-        setTimeout(() => {
-          if (negotiationLockRef.current[from]) {
-            // Still locked, try again
-            lastOfferTimeRef.current[from] = 0 // Reset debounce
-          }
-        }, 500)
-        return
-      }
-      
-      console.log('[WebRTC] Received offer from:', from)
-      negotiationLockRef.current[from] = true
 
-      const pc = createPeerConnection(from)
-      applyReceiverLatencyHints(pc, from)
-      const offerCollision = makingOfferRef.current[from] || pc.signalingState !== 'stable'
-      const polite = isPolite(from)
-
-      // FIX: Never ignore offers - always respond to ensure connectivity
-      // Original logic caused deadlocks when both peers ignored each other
-      if (offerCollision) {
-        console.log('[WebRTC] Handling offer collision for', from, '- polite:', polite)
-        // If we're already making an offer, we need to handle the collision
-        if (makingOfferRef.current[from]) {
-          // We're also trying to connect - let the polite peer win
-          // Wait a bit then proceed anyway to ensure connection
-          if (!polite) {
-            // Give polite peer time to complete their offer
-            await new Promise(r => setTimeout(r, 200))
-          }
-        }
-        // Regardless of politeness, rollback if needed to accept the offer
-        if (pc.signalingState !== 'stable') {
-          console.log('[WebRTC] Rolling back for', from)
-          try {
-            await pc.setLocalDescription({ type: 'rollback' })
-          } catch (e) {
-            // Rollback might fail if we're already in stable state - that's ok
-          }
-          makingOfferRef.current[from] = false
-        }
-      }
-
-      try {
-        await pc.setRemoteDescription(new RTCSessionDescription(offer))
+      enqueueSignal(from, async () => {
+        console.log('[WebRTC] Processing offer from:', from)
+        const pc = createPeerConnection(from)
         applyReceiverLatencyHints(pc, from)
-        remoteDescSetRef.current[from] = true
 
-        // Flush buffered ICE candidates
-        const pending = pendingCandidatesRef.current[from] || []
-        pendingCandidatesRef.current[from] = []
-        for (const c of pending) {
-          try { await pc.addIceCandidate(new RTCIceCandidate(c)) } catch {}
+        const polite = isPolite(from)
+
+        const offerCollision =
+          makingOfferRef.current[from] ||
+          pc.signalingState !== 'stable' ||
+          isSettingRemoteAnswerPendingRef.current[from]
+
+        // Standard rule: impolite peer ignores colliding offers, polite peer rolls back
+        ignoreOfferRef.current[from] = !polite && offerCollision
+        if (ignoreOfferRef.current[from]) {
+          console.log('[WebRTC] Ignoring colliding offer from', from, '(impolite)')
+          return
         }
-        if (pending.length) console.log(`[WebRTC] Flushed ${pending.length} buffered ICE for ${from}`)
 
-        const answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
-
-        socket.emit('voice:answer', {
-          to: from,
-          answer: pc.localDescription,
-          channelId: channelIdRef.current
-        })
-        console.log('[WebRTC] Sent answer to:', from)
-        // Don't initiate return connection - it creates collisions
-        // The peer who sent the offer will maintain the connection to us
-        
-      } catch (err) {
-        console.error('[WebRTC] Failed to handle offer from', from, ':', err.message)
-      } finally {
-        // Release the lock after a short delay to allow the answer to be processed
-        setTimeout(() => {
-          negotiationLockRef.current[from] = false
-        }, 1000)
-      }
-    })
-
-    // FIX: Improved answer handling - always process and ensure bidirectional connectivity
-    socket.on('voice:answer', async (data) => {
-      const { from, answer, channelId } = data
-      if (channelId && channelId !== channelIdRef.current) return
-      const pc = peerConnections.current[from]
-      if (!pc) {
-        console.log('[WebRTC] No peer connection for answer from', from, '- creating one')
-        // FIX: Create a new connection if we don't have one
-        const newPc = createPeerConnection(from)
-        applyReceiverLatencyHints(newPc, from)
         try {
-          await newPc.setRemoteDescription(new RTCSessionDescription(answer))
-          applyReceiverLatencyHints(newPc, from)
+          // Chrome requires awaiting rollback - Firefox is forgiving
+          if (offerCollision) {
+            console.log('[WebRTC] Rolling back for', from, '(polite)')
+            await pc.setLocalDescription({ type: 'rollback' })
+          }
+
+          await pc.setRemoteDescription(new RTCSessionDescription(offer))
           remoteDescSetRef.current[from] = true
-          // Flush any buffered ICE candidates
+
+          // Flush buffered ICE after remote desc (Chrome requirement)
           const pending = pendingCandidatesRef.current[from] || []
           pendingCandidatesRef.current[from] = []
           for (const c of pending) {
-            try { await newPc.addIceCandidate(new RTCIceCandidate(c)) } catch {}
+            try { await pc.addIceCandidate(new RTCIceCandidate(c)) } catch {}
+          }
+          if (pending.length) console.log(`[WebRTC] Flushed ${pending.length} buffered ICE for ${from}`)
+
+          isSettingRemoteAnswerPendingRef.current[from] = true
+          const answer = await pc.createAnswer()
+          await pc.setLocalDescription(answer)
+          isSettingRemoteAnswerPendingRef.current[from] = false
+
+          socket.emit('voice:answer', {
+            to: from,
+            answer: pc.localDescription,
+            channelId: channelIdRef.current
+          })
+          console.log('[WebRTC] Sent answer to:', from)
+        } catch (err) {
+          console.error('[WebRTC] Failed to handle offer from', from, ':', err.message)
+        } finally {
+          isSettingRemoteAnswerPendingRef.current[from] = false
+        }
+      })
+    })
+
+    // Answer handling - must match an outstanding local offer
+    // Answers without an existing PC are invalid and should be ignored
+    socket.on('voice:answer', (data) => {
+      const { from, answer, channelId } = data
+      if (channelId && channelId !== channelIdRef.current) return
+
+      enqueueSignal(from, async () => {
+        const pc = peerConnections.current[from]
+        if (!pc) {
+          console.log('[WebRTC] No peer connection for answer from', from, '- ignoring (no outstanding offer)')
+          return
+        }
+
+        if (pc.signalingState === 'stable') {
+          console.log('[WebRTC] Already stable with', from, '- ignoring duplicate answer')
+          return
+        }
+
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(answer))
+          applyReceiverLatencyHints(pc, from)
+          remoteDescSetRef.current[from] = true
+          ignoreOfferRef.current[from] = false
+          negotiationCompleteRef.current[from] = true
+          console.log('[WebRTC] Set remote answer from:', from)
+
+          // Flush buffered ICE candidates
+          const pending = pendingCandidatesRef.current[from] || []
+          pendingCandidatesRef.current[from] = []
+          for (const c of pending) {
+            try { await pc.addIceCandidate(new RTCIceCandidate(c)) } catch {}
           }
           if (pending.length) console.log(`[WebRTC] Flushed ${pending.length} buffered ICE for ${from}`)
         } catch (err) {
           console.error('[WebRTC] Failed to set answer from', from, ':', err.message)
         }
-        return
-      }
-      if (pc.signalingState === 'stable') {
-        console.log('[WebRTC] Already stable with', from, '- ignoring duplicate answer')
-        return
-      }
-
-      try {
-        await pc.setRemoteDescription(new RTCSessionDescription(answer))
-        applyReceiverLatencyHints(pc, from)
-        remoteDescSetRef.current[from] = true
-        // Clear ignoreOffer now that we have a valid answer — ICE candidates
-        // from this peer must be processed from this point forward.
-        ignoreOfferRef.current[from] = false
-        // Mark negotiation as complete to prevent spurious renegotiation
-        negotiationCompleteRef.current[from] = true
-        console.log('[WebRTC] Set remote answer from:', from)
-        // Flush buffered ICE candidates
-        const pending = pendingCandidatesRef.current[from] || []
-        pendingCandidatesRef.current[from] = []
-        for (const c of pending) {
-          try { await pc.addIceCandidate(new RTCIceCandidate(c)) } catch {}
-        }
-        if (pending.length) console.log(`[WebRTC] Flushed ${pending.length} buffered ICE for ${from}`)
-        // Don't retry - let the connection establish naturally
-      } catch (err) {
-        console.error('[WebRTC] Failed to set answer from', from, ':', err.message)
-      }
+      })
     })
 
     // FIX: Improved ICE candidate handling - always process candidates
@@ -2535,89 +4285,34 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
     socket.on('voice:user-left', (data) => {
       const userId = data?.userId || data?.id
       if (!userId) return
-      setParticipants(prev => prev.filter(p => p.id !== userId))
-      setPeerStates(prev => { const n = { ...prev }; delete n[userId]; return n })
-      soundService.userLeft()
-
-      if (peerConnections.current[userId]) {
-        try { peerConnections.current[userId].close() } catch {}
-        delete peerConnections.current[userId]
-      }
-      ;[userId, `${userId}__screen`].forEach(audioKey => {
-        const el = audioElements.current[audioKey]
-        if (!(el instanceof HTMLMediaElement)) return
-        try { el.pause() } catch {}
-        el.srcObject = null
-        if (el.parentNode) el.parentNode.removeChild(el)
-        delete audioElements.current[audioKey]
-      })
-      // Disconnect Web Audio bypass nodes
-      try { audioElements.current[`${userId}__webaudio_source`]?.disconnect() } catch {}
-      try { audioElements.current[`${userId}__webaudio_gain`]?.disconnect() } catch {}
-      delete audioElements.current[`${userId}__webaudio_source`]
-      delete audioElements.current[`${userId}__webaudio_gain`]
-      delete audioElements.current[`${userId}__webaudio_ctx`]
-      delete remoteStreams.current[userId]
-      // Clear perfect-negotiation state
-      delete makingOfferRef.current[userId]
-      delete ignoreOfferRef.current[userId]
-      delete remoteDescSetRef.current[userId]
-      delete pendingCandidatesRef.current[userId]
-      delete lastOfferTimeRef.current[userId]
-      delete negotiationLockRef.current[userId]
-      delete negotiationCompleteRef.current[userId]
-      // Clean up remote audio analyser
-      if (remoteAnalysersRef.current[userId]) {
-        try { 
-          remoteAnalysersRef.current[userId].audioContext?.close()?.catch(() => {}) 
-        } catch {}
-        delete remoteAnalysersRef.current[userId]
-      }
-      // Clear speaking state for this user
-      setSpeaking(prev => {
-        const next = { ...prev }
-        delete next[userId]
-        return next
-      })
-      // Clear video streams for this user
-      setVideoStreams(prev => {
-        const next = { ...prev }
-        delete next[userId]
-        return next
-      })
+      // Mark participant as reconnecting in UI instead of removing immediately,
+      // giving them time to rejoin (e.g. during socket reconnect).
+      setParticipants(prev => prev.map(p =>
+        p?.id === userId ? { ...p, isReconnecting: true } : p
+      ))
+      // Schedule actual removal with a longer grace window (5 s).
+      // cancelPendingPeerRemoval is called inside schedulePeerRemoval, so any
+      // pre-existing timer for this userId is replaced automatically.
+      schedulePeerRemoval(userId, 5000, { playSound: true })
     })
 
 // Handle force-reconnect command from server (consensus broken)
 socket.on('voice:force-reconnect', (data) => {
-  // Clear video streams on reconnect
-  setVideoStreams({})
       const { channelId, reason, targetPeer, failurePercent, timestamp } = data
       if (channelId !== channelIdRef.current) return
 
       console.log(`[Voice] Force-reconnect received: ${reason}, target=${targetPeer}, failures=${failurePercent}%`)
 
       if (targetPeer === user?.id) {
-        // I am the problematic peer - perform full reconnect
-        console.log('[Voice] I am the target peer - performing full reconnect in 1s')
+        // I am the problematic peer - rebuild the mesh in-place, do not leave channel.
+        console.log('[Voice] I am the target peer - performing in-place reconnect')
         soundService.error()
-        // Trigger leave and rejoin
-        handleLeave()
-        setTimeout(() => {
-          if (channelIdRef.current === channelId) {
-            console.log('[Voice] Rejoining after force-reconnect')
-            // The effect will handle rejoining via joinKey change
-          }
-        }, 1000)
+        performInPlaceReconnect(`targeted:${reason || 'unknown'}`)
       } else if (targetPeer === 'all' || targetPeer === '*') {
-        // Everyone reconnect
-        console.log('[Voice] Full channel reconnect requested - performing full reconnect in 1s')
+        // Everyone reconnect - rebuild in-place so users are not kicked from UI.
+        console.log('[Voice] Full channel reconnect requested - performing in-place reconnect')
         soundService.error()
-        handleLeave()
-        setTimeout(() => {
-          if (channelIdRef.current === channelId) {
-            console.log('[Voice] Rejoining after full channel reconnect')
-          }
-        }, 1000)
+        performInPlaceReconnect(`all:${reason || 'unknown'}`)
       } else {
         // Reconnect to specific peer only
         console.log(`[Voice] Reconnecting to specific peer ${targetPeer}`)
@@ -2630,14 +4325,17 @@ socket.on('voice:force-reconnect', (data) => {
         delete ignoreOfferRef.current[targetPeer]
         delete remoteDescSetRef.current[targetPeer]
         delete pendingCandidatesRef.current[targetPeer]
-        setTimeout(() => queueConnection(targetPeer), 1000)
+        cancelConnectionAttempt(targetPeer)
+        schedulePeerReconnect(targetPeer, 'force-reconnect', { force: true, immediate: true })
       }
     })
 
     socket.on('voice:user-updated', (data) => {
+      // Skip if no userId provided
+      if (!data?.userId) return
       setParticipants(prev => prev.map(p => 
-        p.id === data.userId ? { ...p, ...data } : p
-      ))
+        p?.id === data.userId ? { ...p, ...data } : p
+      ).filter(p => p?.id))
     })
 
     socket.on('voice:screen-share-update', (data) => {
@@ -2742,6 +4440,7 @@ socket.on('voice:force-reconnect', (data) => {
       // Mark as cancelled to stop in-flight init
       cancelled = true
       isInitializingRef.current = false
+      clearAllScheduledVoiceTimers()
 
       // Remove document audio resume listeners
       document.removeEventListener('click',   resumeAudio)
@@ -2804,6 +4503,8 @@ socket.on('voice:force-reconnect', (data) => {
         if (localStreamRef.current) {
           localStreamRef.current.getTracks().forEach(track => track.stop())
           localStreamRef.current = null
+          activeOutboundAudioTrackRef.current = null
+          activeOutboundAudioStreamRef.current = null
         }
         
         // Clean up audio context
@@ -2811,6 +4512,7 @@ socket.on('voice:force-reconnect', (data) => {
           analyserRef.current.audioContext.close().catch(() => {})
         }
         analyserRef.current = null
+        cleanupAllVideoElements()
         
         // Emit leave only if we haven't already and socket is connected
         if (!hasLeftRef.current && channelIdRef.current) {
@@ -2829,13 +4531,86 @@ socket.on('voice:force-reconnect', (data) => {
         initializedChannelIdRef.current = null
       }
     }
-  }, [socket, channel?.id, user?.id, joinKey, clearRemoteVideoState, applyLowDelayModeToAllPeers, applyReceiverLatencyHints])
+  }, [socket, channel?.id, user?.id, joinKey, clearRemoteVideoState, applyLowDelayModeToAllPeers, applyReceiverLatencyHints, cancelConnectionAttempt, cancelPendingPeerRemoval, clearAllScheduledVoiceTimers, cleanupAllVideoElements, schedulePeerRemoval, scheduleTrackedTimeout, shouldInitiatePeerConnection, schedulePeerReconnect])
 
   // Expose peer connections for the VoiceInfoModal stats panel
   useEffect(() => {
     window.__vcGetPCs = () => ({ ...peerConnections.current })
-    return () => { delete window.__vcGetPCs }
-  }, [])
+    window.__vcGetDiagnostics = () => {
+      let settings = {}
+      try {
+        settings = settingsService.getSettings() || {}
+      } catch {}
+
+      const pcs = peerConnections.current || {}
+      const peers = Object.entries(pcs).map(([peerId, pc]) => {
+        let receivers = []
+        try {
+          receivers = (pc.getReceivers?.() || []).map((r) => ({
+            kind: r?.track?.kind || null,
+            trackId: r?.track?.id || null,
+            trackReadyState: r?.track?.readyState || null,
+            trackEnabled: !!r?.track?.enabled,
+            trackMuted: !!r?.track?.muted
+          }))
+        } catch {}
+        return {
+          peerId,
+          connectionState: pc.connectionState,
+          iceConnectionState: pc.iceConnectionState,
+          signalingState: pc.signalingState,
+          receivers
+        }
+      })
+
+      const audio = Object.entries(audioElements.current || {}).flatMap(([key, el]) => {
+        if (!(el instanceof HTMLMediaElement)) return []
+        const srcTracks = (el.srcObject?.getTracks?.() || []).map((t) => ({
+          kind: t.kind,
+          id: t.id,
+          readyState: t.readyState,
+          enabled: !!t.enabled,
+          muted: !!t.muted
+        }))
+        return [{
+          key,
+          paused: !!el.paused,
+          muted: !!el.muted,
+          volume: typeof el.volume === 'number' ? Number(el.volume.toFixed(3)) : null,
+          readyState: el.readyState,
+          currentTime: Number((el.currentTime || 0).toFixed(3)),
+          sinkId: typeof el.sinkId === 'string' ? el.sinkId : null,
+          hasSrcObject: !!el.srcObject,
+          srcTracks
+          ,
+          effectiveMutedReason: (
+            !!settings.muteAll ? 'muteAll' :
+            !!currentDeafened ? 'deafened' :
+            !!el.muted ? 'perUser' : 'none'
+          )
+        }]
+      })
+
+      return {
+        now: Date.now(),
+        settings: {
+          outputDevice: settings.outputDevice || 'default',
+          volume: settings.volume ?? 100,
+          muteAll: !!settings.muteAll
+        },
+        currentState: {
+          muted: currentMuted,
+          deafened: currentDeafened
+        },
+        peers,
+        audioElements: audio
+      }
+    }
+    return () => {
+      delete window.__vcGetPCs
+      delete window.__vcGetDiagnostics
+    }
+  }, [currentMuted, currentDeafened])
 
   // Connection watchdog — gentle monitoring, minimal interference
   // Only restart ICE for disconnected peers, don't aggressively reconnect
@@ -2845,6 +4620,7 @@ socket.on('voice:force-reconnect', (data) => {
     const watchdog = setInterval(() => {
       if (!hasJoinedRef.current) return
       
+      const now = Date.now()
       Object.entries(peerConnections.current).forEach(([peerId, pc]) => {
         const s = pc.connectionState
         const iceS = pc.iceConnectionState
@@ -2852,6 +4628,7 @@ socket.on('voice:force-reconnect', (data) => {
         // Only handle completely failed connections - close them cleanly
         if (s === 'failed' || s === 'closed') {
           console.log(`[WebRTC] Watchdog: ${peerId} is ${s}`)
+          peerDisconnectedAtRef.current.delete(peerId)
           try { pc.close() } catch {}
           delete peerConnections.current[peerId]
           makingOfferRef.current[peerId] = false
@@ -2859,10 +4636,26 @@ socket.on('voice:force-reconnect', (data) => {
           return
         }
         
-        // Only restart ICE for truly stuck connections, don't reconnect
+        // Track when a peer first enters disconnected state
         if (s === 'disconnected' && iceS === 'disconnected') {
-          console.log(`[WebRTC] Watchdog: ${peerId} disconnected — restarting ICE`)
-          pc.restartIce()
+          if (!peerDisconnectedAtRef.current.has(peerId)) {
+            peerDisconnectedAtRef.current.set(peerId, now)
+            console.log(`[WebRTC] Watchdog: ${peerId} entered disconnected state — waiting before ICE restart`)
+            return
+          }
+          // Only restart ICE after the peer has been disconnected for > 8 s
+          const disconnectedFor = now - peerDisconnectedAtRef.current.get(peerId)
+          if (disconnectedFor > 8000) {
+            console.log(`[WebRTC] Watchdog: ${peerId} disconnected for ${disconnectedFor}ms — restarting ICE`)
+            peerDisconnectedAtRef.current.delete(peerId)
+            pc.restartIce()
+          }
+          return
+        }
+        
+        // Peer is no longer disconnected — clear the tracked timestamp
+        if (peerDisconnectedAtRef.current.has(peerId)) {
+          peerDisconnectedAtRef.current.delete(peerId)
         }
       })
     }, 10000) // Check less frequently - every 10 seconds
@@ -2946,59 +4739,71 @@ socket.on('voice:force-reconnect', (data) => {
   const pendingRenegotiationRef = useRef(null)
   const RENEGOTIATION_DELAY = 500
 
-  // Trigger renegotiation for a specific peer after track changes
-  const renegotiateWithPeer = async (peerId) => {
-    const pc = peerConnections.current[peerId]
-    if (!pc) {
-      console.log(`[WebRTC] Cannot renegotiate with ${peerId} - no peer connection`)
-      return
-    }
-    
-    const connState = pc.connectionState
-    const iceState = pc.iceConnectionState
-    const sigState = pc.signalingState
-    
-    if (connState === 'closed' || connState === 'failed' || connState === 'disconnected') {
-      console.log(`[WebRTC] Skipping renegotiation with ${peerId} - connection state: ${connState}`)
-      return
-    }
-    
-    if (iceState === 'failed' || iceState === 'disconnected') {
-      console.log(`[WebRTC] Skipping renegotiation with ${peerId} - ICE state: ${iceState}`)
-      return
-    }
-    
-    if (sigState !== 'stable') {
-      console.log(`[WebRTC] Cannot renegotiate with ${peerId} - signaling state: ${sigState}`)
-      return
-    }
-    
-    if (makingOfferRef.current[peerId]) {
-      console.log(`[WebRTC] Skipping renegotiation for ${peerId} - offer already in flight`)
-      return
-    }
-    
-    try {
-      makingOfferRef.current[peerId] = true
-      const offer = await pc.createOffer()
-      
-      if (pc.signalingState !== 'stable') {
-        console.log(`[WebRTC] Aborting renegotiation for ${peerId} - state changed to ${pc.signalingState}`)
+  // Trigger renegotiation for a specific peer after track changes - uses per-peer queue
+  const renegotiateWithPeer = (peerId) => {
+    enqueueSignal(peerId, async () => {
+      const pc = peerConnections.current[peerId]
+      if (!pc) {
+        console.log(`[WebRTC] Cannot renegotiate with ${peerId} - no peer connection`)
         return
       }
       
-      await pc.setLocalDescription(offer)
-      socket?.emit('voice:offer', {
-        to: peerId,
-        offer: pc.localDescription,
-        channelId: channelIdRef.current
-      })
-      console.log(`[WebRTC] Sent renegotiation offer to ${peerId}`)
-    } catch (err) {
-      console.error(`[WebRTC] Renegotiation failed for ${peerId}:`, err.message)
-    } finally {
-      makingOfferRef.current[peerId] = false
-    }
+      const connState = pc.connectionState
+      const iceState = pc.iceConnectionState
+      const sigState = pc.signalingState
+      
+      if (connState === 'closed' || connState === 'failed' || connState === 'disconnected') {
+        console.log(`[WebRTC] Skipping renegotiation with ${peerId} - connection state: ${connState}`)
+        return
+      }
+      
+      if (iceState === 'failed' || iceState === 'disconnected') {
+        console.log(`[WebRTC] Skipping renegotiation with ${peerId} - ICE state: ${iceState}`)
+        return
+      }
+      
+      if (sigState !== 'stable') {
+        console.log(`[WebRTC] Cannot renegotiate with ${peerId} - signaling state: ${sigState}`)
+        return
+      }
+      
+      if (makingOfferRef.current[peerId]) {
+        console.log(`[WebRTC] Skipping renegotiation for ${peerId} - offer already in flight`)
+        return
+      }
+      
+      // Skip if we're currently setting a remote answer
+      if (isSettingRemoteAnswerPendingRef.current[peerId]) {
+        console.log(`[WebRTC] Skipping renegotiation for ${peerId} - setting remote answer`)
+        return
+      }
+      
+      try {
+        makingOfferRef.current[peerId] = true
+        const offer = await pc.createOffer()
+        const patchedOffer = {
+          ...offer,
+          sdp: preferOpusInSdp(offer.sdp)
+        }
+        
+        if (pc.signalingState !== 'stable') {
+          console.log(`[WebRTC] Aborting renegotiation for ${peerId} - state changed to ${pc.signalingState}`)
+          return
+        }
+        
+        await pc.setLocalDescription(patchedOffer)
+        socket?.emit('voice:offer', {
+          to: peerId,
+          offer: pc.localDescription,
+          channelId: channelIdRef.current
+        })
+        console.log(`[WebRTC] Sent renegotiation offer to ${peerId}`)
+      } catch (err) {
+        console.error(`[WebRTC] Renegotiation failed for ${peerId}:`, err.message)
+      } finally {
+        makingOfferRef.current[peerId] = false
+      }
+    })
   }
 
   // Trigger renegotiation with all connected peers (debounced)
@@ -3116,9 +4921,6 @@ socket.on('voice:force-reconnect', (data) => {
     return () => { delete window.__vcDebug }
   }, [participants, channel?.id])
 
-  const currentMuted = externalMuted !== undefined ? externalMuted : localIsMuted
-  const currentDeafened = externalDeafened !== undefined ? externalDeafened : localIsDeafened
-
   const persistVoiceState = useCallback((muted, deafened) => {
     const nextDeafened = !!deafened
     const nextMuted = nextDeafened ? true : !!muted
@@ -3133,8 +4935,14 @@ socket.on('voice:force-reconnect', (data) => {
     try {
       const settings = settingsService.getSettings()
       if (settings?.rememberVoiceState) {
-        settingsService.setSetting('voiceMuted', nextMuted)
-        settingsService.setSetting('voiceDeafened', nextDeafened)
+        // Persist remembered voice state without broadcasting a global settings
+        // update. Mute/unmute should only affect local mic state, not remote
+        // playback routing/volume.
+        const SETTINGS_KEY = 'voltchat_settings'
+        const raw = localStorage.getItem(SETTINGS_KEY)
+        const parsed = raw ? JSON.parse(raw) : settings
+        const nextSettings = { ...parsed, voiceMuted: nextMuted, voiceDeafened: nextDeafened }
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(nextSettings))
       }
     } catch {}
   }, [])
@@ -3300,6 +5108,15 @@ socket.on('voice:force-reconnect', (data) => {
     }
   }, [viewMode])
 
+  // Clear focused activity when switching to mini mode to prevent keyboard capture
+  useEffect(() => {
+    if (viewMode === 'mini' && focusedBuiltinSession) {
+      console.log('[VoiceChannel] Clearing focused activity in mini mode to prevent keyboard capture')
+      setFocusedBuiltinSession(null)
+      clearFocusedActivity()
+    }
+  }, [viewMode, focusedBuiltinSession, clearFocusedActivity])
+
   const toggleMute = () => {
     // Can't unmute while deafened
     if (currentDeafened && currentMuted) return
@@ -3371,10 +5188,80 @@ socket.on('voice:force-reconnect', (data) => {
     }
   }
 
+  const publishCameraStream = async (stream, { renegotiate = false } = {}) => {
+    const videoTrack = stream?.getVideoTracks?.()[0]
+    if (!videoTrack) return
+    videoTrack._senderTag = 'camera'
+
+    Object.entries(peerConnections.current).forEach(([peerId, pc]) => {
+      const connState = pc.connectionState
+      const iceState = pc.iceConnectionState
+      if (connState === 'closed' || connState === 'failed' || connState === 'disconnected') return
+      if (iceState === 'failed' || iceState === 'disconnected') return
+      const existing = pc.getSenders().find((sender) => sender.track?._senderTag === 'camera')
+      if (existing) {
+        existing.replaceTrack(videoTrack).catch(() => {})
+      } else {
+        const sender = pc.addTrack(videoTrack, stream)
+        if (sender?.track) sender.track._senderTag = 'camera'
+      }
+    })
+
+    if (renegotiate) {
+      await renegotiateWithAllPeers()
+    }
+  }
+
+  const publishScreenStream = async (stream, { renegotiate = false } = {}) => {
+    const videoTrack = stream?.getVideoTracks?.()[0]
+    const audioTracks = stream?.getAudioTracks?.() || []
+
+    if (videoTrack) {
+      videoTrack._senderTag = 'screen'
+    }
+    audioTracks.forEach((track) => {
+      track._senderTag = 'screen-audio'
+    })
+
+    Object.entries(peerConnections.current).forEach(([peerId, pc]) => {
+      const connState = pc.connectionState
+      const iceState = pc.iceConnectionState
+      if (connState === 'closed' || connState === 'failed' || connState === 'disconnected') return
+      if (iceState === 'failed' || iceState === 'disconnected') return
+
+      if (videoTrack) {
+        const existingVideoSender = pc.getSenders().find((sender) => sender.track?._senderTag === 'screen')
+        if (existingVideoSender) {
+          existingVideoSender.replaceTrack(videoTrack).catch(() => {})
+        } else {
+          pc.addTrack(videoTrack, stream)
+        }
+      }
+
+      audioTracks.forEach((audioTrack) => {
+        const existingAudioSender = pc.getSenders().find((sender) => sender.track?._senderTag === 'screen-audio')
+        if (existingAudioSender) {
+          existingAudioSender.replaceTrack(audioTrack).catch(() => {})
+        } else if (!pc.getSenders().find((sender) => sender.track?.id === audioTrack.id)) {
+          pc.addTrack(audioTrack, stream)
+        }
+      })
+    })
+
+    if (renegotiate) {
+      await renegotiateWithAllPeers()
+    }
+  }
+
   const toggleVideo = async () => {
     if (isVideoOn) {
       // Stop all video tracks first so the camera LED turns off
       localVideoStream?.getVideoTracks().forEach(track => track.stop())
+      if (rawLocalVideoStreamRef.current && rawLocalVideoStreamRef.current !== localVideoStream) {
+        rawLocalVideoStreamRef.current.getTracks().forEach((track) => track.stop())
+      }
+      rawLocalVideoStreamRef.current = null
+      stopOverlaySession('camera')
       setLocalVideoStream(null)
       setIsVideoOn(false)
       soundService.cameraOff()
@@ -3429,40 +5316,13 @@ socket.on('voice:force-reconnect', (data) => {
           }
         }
 
-        setLocalVideoStream(videoStream)
+        rawLocalVideoStreamRef.current = videoStream
+        const outboundVideoStream = buildOverlayCompositeStream('camera', videoStream, cameraOverlays)
+        setLocalVideoStream(outboundVideoStream)
         setIsVideoOn(true)
         soundService.cameraOn()
 
-        const videoTrack = videoStream.getVideoTracks()[0]
-        // Tag this track so we can find it later
-        videoTrack._senderTag = 'camera'
-
-        // Add video track to all peer connections that are in a good state
-        Object.entries(peerConnections.current).forEach(([peerId, pc]) => {
-          // Skip connections that aren't in a usable state
-          const connState = pc.connectionState
-          const iceState = pc.iceConnectionState
-          if (connState === 'closed' || connState === 'failed' || connState === 'disconnected') {
-            console.log(`[Video] Skipping track add to ${peerId} - connection state: ${connState}`)
-            return
-          }
-          if (iceState === 'failed' || iceState === 'disconnected') {
-            console.log(`[Video] Skipping track add to ${peerId} - ICE state: ${iceState}`)
-            return
-          }
-          
-          // Camera and screen share each get their OWN sender — don't reuse
-          const existing = pc.getSenders().find(s => s.track?._senderTag === 'camera')
-          if (existing) {
-            existing.replaceTrack(videoTrack)
-          } else {
-            const sender = pc.addTrack(videoTrack, videoStream)
-            if (sender) sender.track._senderTag = 'camera'
-          }
-        })
-
-        // Renegotiate to send video track to all peers
-        await renegotiateWithAllPeers()
+        await publishCameraStream(outboundVideoStream, { renegotiate: true })
 
         // Request resync from all peers when video starts
         socket?.emit('voice:video', { channelId: channel.id, enabled: true })
@@ -3502,7 +5362,16 @@ socket.on('voice:force-reconnect', (data) => {
   }
 
   const _stopScreenShare = (stream) => {
+    // Clear video-only stream cache for this stream
+    if (stream?.id) {
+      delete videoOnlyStreamCache.current[stream.id]
+    }
     stream?.getTracks().forEach(track => track.stop())
+    if (rawScreenStreamRef.current && rawScreenStreamRef.current !== stream) {
+      rawScreenStreamRef.current.getTracks().forEach((track) => track.stop())
+    }
+    rawScreenStreamRef.current = null
+    stopOverlaySession('screen')
     _removeSendersForStream(stream)
     setScreenStream(null)
     setIsScreenSharing(false)
@@ -3530,35 +5399,83 @@ socket.on('voice:force-reconnect', (data) => {
       // Renegotiate to remove screen share track from all peers
       await renegotiateWithAllPeers()
     } else {
+      // In desktop mode, show the screen picker
+      if (window.__IS_DESKTOP_APP__ && window.electron?.getSources) {
+        setShowScreenSharePicker(true)
+        return
+      }
+      
+      // Web fallback
       try {
         const browser = detectScreenShareBrowser()
         let stream = null
-        try {
-          stream = await navigator.mediaDevices.getDisplayMedia({
-            video: { frameRate: { ideal: 30 } },
+        
+        // Use Electron's desktopCapturer for screen sharing with audio
+        if (window.__IS_DESKTOP_APP__ && window.electron?.getSources) {
+          const sources = await window.electron.getSources({
+            types: ['window', 'screen'],
+            thumbnailSize: { width: 320, height: 180 }
+          })
+          
+          if (!sources || sources.length === 0) {
+            throw new Error('No sources available')
+          }
+          
+          // Prefer screen sources for full screen share with audio
+          const sourceId = sources.find(s => s.source === 'screen')?.id || sources[0].id
+          
+          stream = await navigator.mediaDevices.getUserMedia({
             audio: {
-              echoCancellation: false,
-              noiseSuppression: false,
-              autoGainControl: false
+              // @ts-ignore - Electron-specific constraint
+              mandatory: {
+                chromeMediaSource: 'desktop',
+                chromeMediaSourceId: sourceId,
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false
+              }
+            },
+            video: {
+              // @ts-ignore
+              mandatory: {
+                chromeMediaSource: 'desktop',
+                chromeMediaSourceId: sourceId,
+                maxWidth: 1920,
+                maxHeight: 1080,
+                maxFrameRate: 30
+              }
             }
           })
-        } catch (displayErr) {
-          // Fallback for browsers/platforms that do not allow display audio capture.
-          if (displayErr?.name !== 'NotAllowedError') {
-            console.warn('[Screen] Display capture with audio failed, retrying without audio:', displayErr.message || displayErr)
+        } else {
+          // Fallback for web - standard getDisplayMedia
+          try {
+            stream = await navigator.mediaDevices.getDisplayMedia({
+              video: { frameRate: { ideal: 30 } },
+              audio: {
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false
+              }
+            })
+          } catch (displayErr) {
+            // Fallback for browsers/platforms that do not allow display audio capture.
+            if (displayErr?.name !== 'NotAllowedError') {
+              console.warn('[Screen] Display capture with audio failed, retrying without audio:', displayErr.message || displayErr)
+            }
+            stream = await navigator.mediaDevices.getDisplayMedia({
+              video: { frameRate: { ideal: 30 } },
+              audio: false
+            })
           }
-          stream = await navigator.mediaDevices.getDisplayMedia({
-            video: { frameRate: { ideal: 30 } },
-            audio: false
-          })
         }
 
-        setScreenStream(stream)
+        rawScreenStreamRef.current = stream
+        const outboundScreenStream = buildOverlayCompositeStream('screen', stream, screenOverlays)
+        setScreenStream(outboundScreenStream)
         setIsScreenSharing(true)
         soundService.screenShareStart()
 
         const videoTrack = stream.getVideoTracks()[0]
-        videoTrack._senderTag = 'screen'
         const screenAudioTracks = stream.getAudioTracks()
         screenAudioTracks.forEach(track => {
           track._senderTag = 'screen-audio'
@@ -3574,40 +5491,7 @@ socket.on('voice:force-reconnect', (data) => {
           console.log(`[Screen] Screen share includes ${screenAudioTracks.length} audio track(s)`)
         }
 
-        // Add screen share track to all peer connections that are in a good state
-        Object.entries(peerConnections.current).forEach(([peerId, pc]) => {
-          // Skip connections that aren't in a usable state
-          const connState = pc.connectionState
-          const iceState = pc.iceConnectionState
-          if (connState === 'closed' || connState === 'failed' || connState === 'disconnected') {
-            console.log(`[Screen] Skipping track add to ${peerId} - connection state: ${connState}`)
-            return
-          }
-          if (iceState === 'failed' || iceState === 'disconnected') {
-            console.log(`[Screen] Skipping track add to ${peerId} - ICE state: ${iceState}`)
-            return
-          }
-          
-          // Screen share gets its own dedicated sender — camera sender is untouched
-          const existingVideoSender = pc.getSenders().find(s => s.track?._senderTag === 'screen')
-          if (existingVideoSender) {
-            existingVideoSender.replaceTrack(videoTrack)
-          } else {
-            pc.addTrack(videoTrack, stream)
-          }
-
-          screenAudioTracks.forEach(audioTrack => {
-            const existingAudioSender = pc.getSenders().find(s => s.track?._senderTag === 'screen-audio')
-            if (existingAudioSender) {
-              existingAudioSender.replaceTrack(audioTrack)
-            } else if (!pc.getSenders().find(s => s.track?.id === audioTrack.id)) {
-              pc.addTrack(audioTrack, stream)
-            }
-          })
-        })
-
-        // Renegotiate to send screen share track to all peers
-        await renegotiateWithAllPeers()
+        await publishScreenStream(outboundScreenStream, { renegotiate: true })
 
         videoTrack.onended = () => {
           _stopScreenShare(stream)
@@ -3621,22 +5505,120 @@ socket.on('voice:force-reconnect', (data) => {
         if (err.name !== 'NotAllowedError') {
           console.error('[Screen] Failed to share screen:', err)
         }
+        upsertVoiceIssue(diagnoseMediaError(err, 'screen'))
       }
     }
+  }
+
+  // Handle screen share source selection from picker (desktop only)
+  const handleScreenShareSourceSelect = async ({ sourceId, includeAudio, isNative, stream: nativeStream }) => {
+    setShowScreenSharePicker(false)
+    
+    try {
+      let stream
+      if (isNative && nativeStream) {
+        // Native picker (Wayland/Windows) returns stream directly
+        stream = nativeStream
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: includeAudio ? {
+            // @ts-ignore
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: sourceId,
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false
+            }
+          } : false,
+          video: {
+            // @ts-ignore
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: sourceId,
+              maxWidth: 1920,
+              maxHeight: 1080,
+              maxFrameRate: 30
+            }
+          }
+        })
+      }
+      
+      rawScreenStreamRef.current = stream
+      const outboundScreenStream = buildOverlayCompositeStream('screen', stream, screenOverlays)
+      setScreenStream(outboundScreenStream)
+      setIsScreenSharing(true)
+      soundService.screenShareStart()
+
+      const videoTrack = stream.getVideoTracks()[0]
+      const screenAudioTracks = stream.getAudioTracks()
+      screenAudioTracks.forEach(track => {
+        track._senderTag = 'screen-audio'
+      })
+      if (screenAudioTracks.length === 0) {
+        setScreenShareAudioWarning(t('voice.screenShareAudioUnavailable', 'Screen sharing started without system audio track'))
+      }
+
+      await publishScreenStream(outboundScreenStream, { renegotiate: true })
+
+      videoTrack.onended = () => {
+        _stopScreenShare(stream)
+        renegotiateWithAllPeers()
+      }
+
+      socket?.emit('voice:screen-share', { channelId: channel.id, enabled: true })
+    } catch (err) {
+      if (err.name !== 'NotAllowedError') {
+        console.error('[Screen] Failed to share screen:', err)
+      }
+      upsertVoiceIssue(diagnoseMediaError(err, 'screen'))
+    }
+  }
+
+  const handleActivityLaunch = (activityId) => {
+    if (!socket || !channel?.id) return
+    pendingLaunchedActivityIdRef.current = activityId
+    socket.emit('activity:create-session', {
+      contextType: 'voice',
+      contextId: channel.id,
+      activityId,
+      activityDefinition: CLIENT_BUILTIN_BY_ID[activityId] || null,
+      p2p: { enabled: true, preferred: true },
+      sound: { enabled: true, volume: 0.8 }
+    })
+    socket.emit('activity:get-sessions', { contextType: 'voice', contextId: channel.id })
   }
 
   const handleLeave = () => {
     // Mark as intentional leave so cleanup doesn't re-emit voice:leave
     isIntentionalLeave = true
-    
-    // soundService.callLeft() - removed, cleanup handles this
+
+    if (hasJoinedRef.current && !hasLeftRef.current) {
+      soundService.prime()
+      soundService.callLeft()
+      window.dispatchEvent(new CustomEvent('voice:self-left', {
+        detail: {
+          channelId: channel?.id || channelIdRef.current,
+          userId: user?.id || null
+        }
+      }))
+    }
 
     // Stop all media tracks
     localStream?.getTracks().forEach(t => t.stop())
     localStreamRef.current?.getTracks().forEach(t => t.stop())
     localStreamRef.current = null
+    activeOutboundAudioTrackRef.current = null
+    activeOutboundAudioStreamRef.current = null
     localVideoStream?.getTracks().forEach(t => t.stop())
     screenStream?.getTracks().forEach(t => t.stop())
+    rawLocalVideoStreamRef.current?.getTracks().forEach(t => t.stop())
+    rawScreenStreamRef.current?.getTracks().forEach(t => t.stop())
+    rawLocalVideoStreamRef.current = null
+    rawScreenStreamRef.current = null
+    stopOverlaySession('camera')
+    stopOverlaySession('screen')
+    clearAllScheduledVoiceTimers()
 
     // Close all peer connections
     Object.values(peerConnections.current).forEach(pc => { try { pc.close() } catch {} })
@@ -3792,7 +5774,12 @@ setVideoStreams({})
     pendingCandidatesRef.current = {}
     lastOfferTimeRef.current = {}
     negotiationLockRef.current = {}
+    negotiationCompleteRef.current = {}
+    signalChainRef.current = {}
+    isSettingRemoteAnswerPendingRef.current = {}
     serverIceServersRef.current = []
+    connectionQueueRef.current = []
+    connectionCooldownsRef.current = new Map()
     initializedChannelIdRef.current = null
     isInitializingRef.current = false
 
@@ -3803,6 +5790,7 @@ setVideoStreams({})
     setParticipants([])
     setPeerStates({})
     setConnectionState('connecting')
+    setJoinedWithoutMic(false)
     setIsVideoOn(false)
     setIsScreenSharing(false)
     setVideoStreams({})
@@ -3822,10 +5810,10 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
     onLeave()
   }
 
-  const otherParticipants = participants.filter(p => p.id !== user?.id)
-  
+  const otherParticipants = participants.filter(p => p?.id !== user?.id)
+
   // Create self participant if not in list yet
-  const selfParticipant = participants.find(p => p.id === user?.id) || {
+  const selfParticipant = participants.find(p => p?.id === user?.id) || {
     id: user?.id,
     username: user?.username || user?.email,
     avatar: user?.avatar,
@@ -3834,14 +5822,25 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
   }
 
   // All participants including self
-  const displayParticipants = participants.find(p => p.id === user?.id)
+  let displayParticipants = participants.find(p => p?.id === user?.id)
     ? participants
     : [selfParticipant, ...participants]
+
+  // Filter out invalid participants to prevent crashes
+  displayParticipants = displayParticipants.filter((p, index) => {
+    if (!p?.id) {
+      console.warn(`[VoiceChannel] Filtering out invalid participant at index ${index}:`, p)
+      return false
+    }
+    return true
+  })
 
   // Derive a single overall header status from mic state + peer states
   const overallStatus = (() => {
     if (connectionState === 'error') return 'error'
     if (connectionState === 'connecting') return 'connecting'
+    if (!connected) return 'error'
+    if (joinedWithoutMic) return 'degraded'
     const peerList = Object.values(peerStates)
     if (peerList.length === 0) return 'connected'          // mic acquired, no peers yet
     if (peerList.some(s => s === 'connected')) return 'connected'
@@ -3857,6 +5856,45 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
     degraded:   t('voice.connectionIssues', 'Connection Issues'),
     error:      t('voice.connectionError', 'Connection Error'),
   }[overallStatus] ?? t('voice.connectingStatus', 'Connecting…')
+
+  const visibleVoiceIssues = useMemo(() => {
+    const derived = [...voiceIssues]
+
+    if (joinedWithoutMic && !derived.some(issue => issue.code === 'mic-fallback')) {
+      derived.push(buildVoiceIssue(
+        'mic-fallback',
+        'warning',
+        'Connected without microphone',
+        'You are in the channel, but your microphone is not active.',
+        'Open Voice Settings to enable mic access or pick a working input device.',
+        'settings'
+      ))
+    }
+
+    if (!connected && !derived.some(issue => issue.code === 'socket-disconnected')) {
+      derived.push(buildVoiceIssue(
+        'socket-disconnected',
+        'error',
+        'Realtime connection lost',
+        'Voice reconnect is waiting for the realtime socket to come back.',
+        'Check your network. If reconnect does not recover, leave and rejoin the channel.',
+        'details'
+      ))
+    }
+
+    if (overallStatus === 'degraded' && !joinedWithoutMic && !derived.some(issue => issue.code === 'peer-connectivity')) {
+      derived.push(buildVoiceIssue(
+        'peer-connectivity',
+        'warning',
+        'Voice quality is degraded',
+        'At least one peer connection is unstable or failed.',
+        'Open connection details to inspect ICE and peer state. Changing network or TURN settings can help.',
+        'details'
+      ))
+    }
+
+    return derived.slice(0, 3)
+  }, [voiceIssues, joinedWithoutMic, connected, overallStatus])
 
   // Close participant context menu on outside click
   useEffect(() => {
@@ -3901,6 +5939,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
 
     if (isSpeakingRaw && !wasSpeaking) {
       speakingTimersRef.current[id] = setTimeout(() => {
+        priorityPeersRef.current.add(id)
         setSpeaking(prev => ({ ...prev, [id]: true }))
       }, SPEAKING_ON_DELAY)
       return
@@ -3908,12 +5947,15 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
 
     if (!isSpeakingRaw && wasSpeaking) {
       speakingTimersRef.current[id] = setTimeout(() => {
+        priorityPeersRef.current.delete(id)
         setSpeaking(prev => ({ ...prev, [id]: false }))
       }, SPEAKING_OFF_DELAY)
       return
     }
 
     if (isSpeakingRaw === wasSpeaking) {
+      if (isSpeakingRaw) priorityPeersRef.current.add(id)
+      else priorityPeersRef.current.delete(id)
       setSpeaking(prev => ({ ...prev, [id]: isSpeakingRaw }))
     }
   }, [])
@@ -4038,17 +6080,17 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
       
       // Check each participant with both audio and video
       displayParticipants.forEach(participant => {
-        if (participant.id === user?.id) return // Skip self
-        
+        if (!participant?.id || participant.id === user?.id) return // Skip self
+
         const audioEl = audioElements.current[participant.id]
         const videoEl = videoElements.current[participant.id]
-        
+
         if (!audioEl || !videoEl) return
         if (audioEl.paused || videoEl.paused) return
-        
+
         const audioCurrentTime = audioEl.currentTime
         const videoCurrentTime = videoEl.currentTime
-        
+
         // Get or create sync state for this participant
         if (!syncCorrectionRef.current[participant.id]) {
           syncCorrectionRef.current[participant.id] = {
@@ -4058,7 +6100,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
             correctionApplied: 0
           }
         }
-        
+
         const syncState = syncCorrectionRef.current[participant.id]
         
         // Only check if both are playing
@@ -4102,7 +6144,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
         clearInterval(syncIntervalId)
       }
       // Clean up sync state for participants who left
-      const currentParticipantIds = new Set(displayParticipants.map(p => p.id))
+      const currentParticipantIds = new Set(displayParticipants.map(p => p?.id).filter(Boolean))
       Object.keys(syncCorrectionRef.current).forEach(id => {
         if (!currentParticipantIds.has(id)) {
           delete syncCorrectionRef.current[id]
@@ -4118,17 +6160,29 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
     return tracks.some(track => track.readyState === 'live' && track.enabled !== false)
   }, [])
 
-  const bindVideoStream = useCallback((el, stream) => {
-    const nextStream = hasLiveVideoTrack(stream) ? stream : null
-    const nextTrackSignature = nextStream
-      ? nextStream.getVideoTracks().map(t => `${t.id}:${t.readyState}:${t.enabled}`).join('|')
-      : ''
-    const prevTrackSignature = el.dataset.trackSignature || ''
+  // Cache for video-only streams to prevent flickering
+  const videoOnlyStreamCache = useRef({})
 
-    // Rebind when stream object changes OR when underlying video track set changes.
-    if (el.srcObject !== nextStream || prevTrackSignature !== nextTrackSignature) {
+  const bindVideoStream = useCallback((el, stream) => {
+    // For user's own screen share with audio, create video-only stream to prevent feedback
+    let streamToPlay = stream
+    if (stream && stream.getAudioTracks().length > 0) {
+      // Reuse cached video-only stream if available and tracks are still valid
+      const existingCached = videoOnlyStreamCache.current[stream.id]
+      if (existingCached && existingCached.getVideoTracks().length > 0) {
+        streamToPlay = existingCached
+      } else {
+        const videoOnlyStream = new MediaStream(stream.getVideoTracks())
+        videoOnlyStreamCache.current[stream.id] = videoOnlyStream
+        streamToPlay = videoOnlyStream
+      }
+    }
+    
+    const nextStream = hasLiveVideoTrack(streamToPlay) ? streamToPlay : null
+    
+    // Only update if stream actually changed to prevent flickering
+    if (el.srcObject !== nextStream) {
       el.srcObject = nextStream
-      el.dataset.trackSignature = nextTrackSignature
     }
 
     if (nextStream) {
@@ -4146,6 +6200,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
 
       videoElements.current[participantId] = el
       const expectedStream = streamOverride || videoStreams[participantId] || null
+      // Force re-bind the stream to ensure video is properly connected
       bindVideoStream(el, expectedStream)
     }
   }, [videoStreams, bindVideoStream])
@@ -4156,20 +6211,33 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
   }, [localUserSettings, user?.id])
 
   const getScreenShareStream = (participant) => {
-    if (participant.id === user?.id && isScreenSharing) {
+    if (participant?.id === user?.id && isScreenSharing) {
       return hasLiveVideoTrack(screenStream) ? screenStream : null
     }
-    return participant.isScreenSharing && hasLiveVideoTrack(participant.videoStream) ? participant.videoStream : null
+    return participant?.isScreenSharing && hasLiveVideoTrack(participant?.videoStream) ? participant?.videoStream : null
   }
 
   const getCameraStream = (participant) => {
-    if (participant.id === user?.id && isVideoOn) {
+    if (participant?.id === user?.id && isVideoOn) {
       return hasLiveVideoTrack(localVideoStream) ? localVideoStream : null
     }
-    return participant.hasVideo && !participant.isScreenSharing && hasLiveVideoTrack(participant.videoStream)
-      ? participant.videoStream
+    return participant?.hasVideo && !participant?.isScreenSharing && hasLiveVideoTrack(participant?.videoStream)
+      ? participant?.videoStream
       : null
   }
+
+  // Effect to re-bind video streams whenever videoStreams or participants change (e.g. view transitions)
+  useEffect(() => {
+    displayParticipants.forEach(participant => {
+      const el = videoElements.current[participant.id]
+      if (el) {
+        const participantCameraStream = getCameraStream(participant)
+        const participantScreenStream = getScreenShareStream(participant)
+        const expectedStream = participantScreenStream || participantCameraStream || null
+        bindVideoStream(el, expectedStream)
+      }
+    })
+  }, [displayParticipants, videoStreams, screenStream, localVideoStream, bindVideoStream])
 
   const hasAnyVideo = displayParticipants.some(p => !!getScreenShareStream(p) || !!getCameraStream(p))
 
@@ -4240,6 +6308,16 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
     } catch {}
   }, [])
 
+  const forceParticipantReconnect = useCallback((targetUserId) => {
+    if (!socket || !targetUserId || !channel?.id) return
+    
+    socket.emit('voice:force-reconnect', {
+      channelId: channel.id,
+      targetUserId
+    })
+    setParticipantMenu(null)
+  }, [socket, channel?.id])
+
   return (
     <div
       ref={rootViewRef}
@@ -4251,7 +6329,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
       ].filter(Boolean).join(' ')}
     >
       <div className="voice-header">
-        <Volume2 size={24} />
+        <SpeakerWaveIcon size={24} />
         <span className="voice-channel-name">{channel?.name || t('chat.voiceChannel')}</span>
         <span
           className={`connection-status ${overallStatus} clickable`}
@@ -4261,17 +6339,136 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
         >
           {statusLabel}
         </span>
+        {encryptionEnabled && (
+          <span
+            className="voice-encryption-status secure"
+            onClick={() => setShowEncryptionInfo(!showEncryptionInfo)}
+            title={t('voice.encryption.secured', 'End-to-end encrypted voice')}
+          >
+            <LockClosedIcon size={16} />
+            <span>{t('voice.encryption.encrypted', 'Encrypted')}</span>
+          </span>
+        )}
+        {!encryptionEnabled && (
+          <span
+            className="voice-encryption-status insecure"
+            onClick={() => setShowEncryptionInfo(!showEncryptionInfo)}
+            title={t('voice.encryption.notSecured', 'Voice not encrypted')}
+          >
+            <ShieldExclamationIcon size={16} />
+            <span>{t('voice.encryption.unencrypted', 'Not Encrypted')}</span>
+          </span>
+        )}
       </div>
+      {showEncryptionInfo && (
+        <div className="voice-encryption-info" role="status" aria-live="polite">
+          {encryptionEnabled ? (
+            <>
+              <LockClosedIcon size={16} />
+              <span><strong>{t('voice.encryption.secureTitle', 'Voice Encryption Enabled')}</strong></span>
+              <p>{t('voice.encryption.secureDesc', 'This voice channel is end-to-end encrypted. Your voice data is secured using SRTP (Secure Real-time Transport Protocol).')}</p>
+              <div className="encryption-fingerprint">
+                <small>{t('voice.encryption.yourFingerprint', 'Your voice fingerprint:')}</small>
+                <code>{myFingerprint || 'Generating...'}</code>
+              </div>
+              {Object.keys(peerVerificationStatus).length > 0 && (
+                <div className="encryption-participants">
+                  <small>{t('voice.encryption.verifiedParticipants', 'Verified participants:')}</small>
+                  {Object.entries(peerVerificationStatus).map(([peerId, status]) => (
+                    <div key={peerId} className={`verification-status ${status.verified ? 'verified' : 'discrepancy'}`}>
+                      <span>{status.verified ? '✓' : '⚠'}</span>
+                      <span>{status.summary}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <ShieldExclamationIcon size={16} />
+              <span><strong>{t('voice.encryption.insecureTitle', 'Voice Not Encrypted')}</strong></span>
+              <p>{t('voice.encryption.insecureDesc', 'This voice channel is not encrypted. Voice data is transmitted in plain text.')}</p>
+            </>
+          )}
+        </div>
+      )}
       {isScreenSharing && screenShareAudioWarning && (
         <div className="voice-inline-warning" role="status" aria-live="polite">
           <Music size={14} />
           <span>{screenShareAudioWarning}</span>
         </div>
       )}
+      {visibleVoiceIssues.length > 0 && (
+        <div className="voice-issues-panel" role="status" aria-live="polite">
+          {visibleVoiceIssues.map((issue) => (
+            <div key={issue.code} className={`voice-issue-card ${issue.severity || 'warning'}`}>
+              <div className="voice-issue-copy">
+                <strong>{issue.title}</strong>
+                <span>{issue.message}</span>
+                <small>How to fix: {issue.fix}</small>
+              </div>
+              <div className="voice-issue-actions">
+                {issue.action === 'settings' && (
+                  <button type="button" onClick={onOpenSettings}>
+                    Open Settings
+                  </button>
+                )}
+                {issue.action === 'details' && (
+                  <button type="button" onClick={() => onShowConnectionInfo?.()}>
+                    View Details
+                  </button>
+                )}
+                <button type="button" className="muted" onClick={() => clearVoiceIssue(issue.code)}>
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
-      <div className={`voice-main-area ${hasAnyVideo ? 'has-video' : ''}`}>
-        {hasAnyVideo && mainVideoStream && mainVideoParticipant ? (
+      <div className={`voice-main-content ${tempChat.isVisible ? 'has-chat' : ''}`}>
+        <div className={`voice-main-area ${hasAnyVideo || focusedBuiltinSession ? 'has-video' : ''} ${focusedBuiltinSession ? 'has-focused-activity' : ''}`}>
+          {/* When activity is focused, show ONLY the activity (full screen) */}
+          {focusedBuiltinSession ? (
           <div 
+            className="voice-main-video voice-main-activity focused-activity-full"
+            ref={(el) => { if (el) el.dataset.activityContainer = 'true' }}
+          >
+            <button 
+              className="fullscreen-btn"
+              onClick={(e) => {
+                e.stopPropagation()
+                e.preventDefault()
+                const container = e.target.closest('.voice-main-activity')
+                if (container) {
+                  if (document.fullscreenElement) {
+                    document.exitFullscreen().catch(() => {})
+                  } else {
+                    container.requestFullscreen().catch(() => {})
+                  }
+                }
+              }}
+              title={t('misc.fullscreen')}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+              </svg>
+            </button>
+            <BuiltinActivityHost
+              session={focusedBuiltinSession}
+              socket={socket}
+              contextType="voice"
+              contextId={channel?.id}
+              embedded
+              onClose={() => {
+                clearFocusedActivity()
+                setFocusedBuiltinSession(null)
+              }}
+            />
+          </div>
+        ) : hasAnyVideo && mainVideoStream && mainVideoParticipant ? (
+          <div
             className="voice-main-video"
             onClick={() => setPinnedParticipant(pinnedParticipant ? null : mainVideoParticipant)}
             onContextMenu={(e) => openParticipantMenu(mainVideoParticipant, e)}
@@ -4283,6 +6480,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
               muted={mainVideoParticipant.id !== user?.id}
               ref={el => {
                 if (!el) return
+                // Force re-bind to ensure main video is always connected to the correct stream
                 bindVideoStream(el, mainVideoStream)
               }}
             />
@@ -4317,23 +6515,35 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
             </div>
             {hasScreenShare && mainVideoType !== 'screen' && (
               <div className="screen-share-notice">
-                <Monitor size={14} />
+                <ComputerDesktopIcon size={14} />
                 <span>{t('chat.someoneSharingScreen')}</span>
               </div>
             )}
           </div>
         ) : (
-          <div className="voice-participants-grid" data-count={displayParticipants.length}>
-            {displayParticipants.map(participant => {
-              const isSelf = participant.id === user?.id
-              const isMuted = participant.muted || (isSelf && currentMuted)
-              const isSpeaking = !!speaking[participant.id]
-              
-              const participantCameraStream = getCameraStream(participant)
-              const participantScreenStream = getScreenShareStream(participant)
-              const participantHasVideo = !!participantCameraStream || !!participantScreenStream
-              
-              return (
+          <div className="voice-participants-grid" data-count={displayParticipants?.length || 0}>
+            {(() => {
+              // Safety wrapper to prevent blank page crashes
+              try {
+                if (!Array.isArray(displayParticipants)) {
+                  console.error('[VoiceChannel] displayParticipants is not an array:', displayParticipants)
+                  return <div className="voice-error">Error loading participants</div>
+                }
+                return displayParticipants.map((participant, index) => {
+                  try {
+                    if (!participant?.id) {
+                      console.warn(`[VoiceChannel] Participant at index ${index} has no id:`, participant)
+                      return null
+                    }
+                    const isSelf = participant.id === user?.id
+                    const isMuted = participant.muted || (isSelf && currentMuted)
+                    const isSpeaking = !!speaking[participant.id]
+
+                    const participantCameraStream = getCameraStream(participant)
+                    const participantScreenStream = getScreenShareStream(participant)
+                    const participantHasVideo = !!participantCameraStream || !!participantScreenStream
+
+                    return (
                 <div
                   key={participant.id}
                   className={`participant-grid-tile ${isSpeaking ? 'speaking' : ''} ${isMuted ? 'muted' : ''} ${participantHasVideo ? 'has-video' : ''}`}
@@ -4349,49 +6559,95 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
                     />
                   ) : (
                     <div className="participant-grid-avatar">
-                      <Avatar
-                        src={participant.avatar}
-                        fallback={participant.username}
-                        size={64}
-                      />
+                    <Avatar
+                      src={participant.avatar || `${imageApiUrl}/api/images/users/${participant.id}/profile`}
+                      fallback={participant.username}
+                      size={24}
+                      userId={participant.id}
+                    />
                       {isMuted && (
                         <div className="participant-grid-muted-icon">
-                          <MicOff size={14} />
+                          <MicrophoneIcon size={14} />
                         </div>
                       )}
                     </div>
                   )}
                   <div className="participant-grid-name">
                     {participant.username}
-                    {participant.bot && <span className="bot-badge">{t('member.bot')}</span>}
+                    {Boolean(participant.bot) && <span className="bot-badge">{t('member.bot')}</span>}
                     {isSelf && ` (${t('common.you') || 'You'})`}
+                    {encryptionEnabled && !isSelf && peerVerificationStatus[participant.id] && (
+                      <span 
+                        className={`participant-verification-badge ${peerVerificationStatus[participant.id].verified ? 'verified' : 'discrepancy'}`}
+                        title={peerVerificationStatus[participant.id].summary || 'Verification status'}
+                      >
+                        {peerVerificationStatus[participant.id].verified ? (
+                          <ShieldCheck size={12} />
+                        ) : (
+                          <ShieldExclamationIcon size={12} />
+                        )}
+                      </span>
+                    )}
                   </div>
                 </div>
-              )
-            })}
+                  )
+                } catch (err) {
+                  console.error(`[VoiceChannel] Error rendering participant at index ${index}:`, err, participant)
+                  return null
+                }
+              })
+            } catch (err) {
+              console.error('[VoiceChannel] Fatal error rendering participants grid:', err)
+              return <div className="voice-error">Error rendering participants</div>
+            }
+          })()}
+
           </div>
         )}
       </div>
+      </div>
+
+      {/* Activity Strip - shows unfocused activities */}
+      <ActivityStrip
+        socket={socket}
+        contextType="voice"
+        contextId={channel?.id}
+        onActivityFocus={(activity) => {
+          setFocusedActivity(activity.sessionId)
+        }}
+      />
 
       <div className="voice-participants-strip">
         <div className="participants-scrollable">
-          {displayParticipants.map(participant => {
-            const isSelf = participant.id === user?.id
-            const isMuted = participant.muted || (isSelf && currentMuted)
-            const isDeafened = participant.deafened || (isSelf && currentDeafened)
-            const isSpeaking = !!speaking[participant.id]
-            const peerState = isSelf ? 'connected' : (peerStates[participant.id] ?? 'connecting')
+          {(() => {
+            // Safety wrapper to prevent blank page crashes
+            try {
+              if (!Array.isArray(displayParticipants)) {
+                console.error('[VoiceChannel] displayParticipants is not an array in strip:', displayParticipants)
+                return null
+              }
+              return displayParticipants.map((participant, index) => {
+                try {
+                  if (!participant?.id) {
+                    console.warn(`[VoiceChannel] Strip participant at index ${index} has no id:`, participant)
+                    return null
+                  }
+                  const isSelf = participant.id === user?.id
+                  const isMuted = participant.muted || (isSelf && currentMuted)
+                  const isDeafened = participant.deafened || (isSelf && currentDeafened)
+                  const isSpeaking = !!speaking[participant.id]
+                  const peerState = isSelf ? 'connected' : (peerStates[participant.id] ?? 'connecting')
 
-            const participantCameraStream = getCameraStream(participant)
-            const participantScreenStream = getScreenShareStream(participant)
-            const participantHasVideo = !!participantCameraStream || !!participantScreenStream
-            const isPinned = pinnedParticipant?.id === participant.id
-            const isMain = mainVideoParticipant?.id === participant.id
+                  const participantCameraStream = getCameraStream(participant)
+                  const participantScreenStream = getScreenShareStream(participant)
+                  const participantHasVideo = !!participantCameraStream || !!participantScreenStream
+                  const isPinned = pinnedParticipant?.id === participant.id
+                  const isMain = mainVideoParticipant?.id === participant.id
 
-            const localSetting = localUserSettings[participant.id] || { muted: false, volume: 100 }
-            const isLocalMuted = !isSelf && localSetting.muted
+                  const localSetting = localUserSettings[participant.id] || { muted: false, volume: 100 }
+                  const isLocalMuted = !isSelf && localSetting.muted
 
-            return (
+                  return (
               <div
                 key={participant.id}
                 className={[
@@ -4430,24 +6686,56 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
                       fallback={participant.username}
                       size={48}
                       className="tile-avatar"
+                      userId={participant.id}
                     />
-                    {isMuted && <div className="tile-mute-icon"><MicOff size={14} /></div>}
-                    {isDeafened && <div className="tile-deafen-icon"><VolumeX size={14} /></div>}
+                    {isMuted && <div className="tile-mute-icon"><MicrophoneIcon size={14} /></div>}
+                    {isDeafened && <div className="tile-deafen-icon"><SpeakerXMarkIcon size={14} /></div>}
                     {!isSelf && peerState !== 'connected' && (
                       <div className={`tile-peer-badge peer-state-${peerState}`} title={t(`voice.peerState.${peerState}`, peerState)}>
                         {peerState === 'connecting' ? '⟳' : peerState === 'failed' ? '✕' : '!'}
+                      </div>
+                    )}
+                    {encryptionEnabled && !isSelf && peerVerificationStatus[participant.id] && (
+                      <div 
+                        className={`tile-verification-badge ${peerVerificationStatus[participant.id].verified ? 'verified' : 'discrepancy'}`}
+                        title={peerVerificationStatus[participant.id].summary || 'Verification status'}
+                      >
+                        {peerVerificationStatus[participant.id].verified ? (
+                          <ShieldCheck size={12} />
+                        ) : (
+                          <ShieldExclamationIcon size={12} />
+                        )}
                       </div>
                     )}
                   </div>
                 )}
                 <span className="tile-name">
                   {participant.username}
-                  {participant.bot && <span className="bot-badge">{t('member.bot')}</span>}
+                  {Boolean(participant.bot) && <span className="bot-badge">{t('member.bot')}</span>}
                   {isSelf && ` (${t('common.you') || 'You'})`}
                 </span>
               </div>
-            )
-          })}
+                  )
+                } catch (err) {
+                  console.error(`[VoiceChannel] Error rendering strip participant at index ${index}:`, err, participant)
+                  return null
+                }
+              })
+            } catch (err) {
+              console.error('[VoiceChannel] Fatal error rendering strip participants:', err)
+              return null
+            }
+          })()}
+
+          {/* Add Activity button in strip */}
+          <button 
+            className="activity-launch-btn"
+            onClick={() => setShowActivityPicker(true)}
+            title="Start an Activity"
+          >
+            <RocketLaunchIcon size={20} />
+            <span>Activity</span>
+          </button>
         </div>
       </div>
 
@@ -4457,7 +6745,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
           onClick={toggleMute}
           title={currentMuted ? t('chat.unmute') : t('chat.mute')}
         >
-          {currentMuted ? <MicOff size={24} /> : <Mic size={24} />}
+          {currentMuted ? <MicrophoneIcon size={28} /> : <MicrophoneIcon size={28} />}
         </button>
         
         <button 
@@ -4465,7 +6753,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
           onClick={toggleDeafen}
           title={currentDeafened ? t('chat.undeafen') : t('chat.deafen')}
         >
-          {currentDeafened ? <VolumeX size={24} /> : <Headphones size={24} />}
+          {currentDeafened ? <SpeakerXMarkIcon size={28} /> : <MusicalNoteIcon size={28} />}
         </button>
 
         <button 
@@ -4473,7 +6761,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
           onClick={toggleVideo}
           title={isVideoOn ? t('chat.disableVideo') : t('chat.enableVideo')}
         >
-          {isVideoOn ? <Video size={24} /> : <VideoOff size={24} />}
+          {isVideoOn ? <VideoCameraIcon size={28} /> : <VideoCameraSlashIcon size={28} />}
         </button>
 
         <button 
@@ -4481,7 +6769,34 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
           onClick={toggleScreenShare}
           title={isScreenSharing ? t('chat.stopSharing') : t('chat.shareScreen')}
         >
-          {isScreenSharing ? <Monitor size={24} /> : <MonitorOff size={24} />}
+          {isScreenSharing ? <ComputerDesktopIcon size={28} /> : <ComputerDesktopIcon size={28} />}
+        </button>
+
+        <button
+          className={`voice-control-btn ${showOverlayStudio ? 'active-video' : ''}`}
+          onClick={() => setShowOverlayStudio(true)}
+          title={t('voice.overlayStudio', 'Overlay Studio')}
+        >
+          <Layers3 size={28} />
+        </button>
+
+        <button 
+          className={`voice-control-btn activities-btn ${activeActivities.filter(a => a.contextType === 'voice' && a.contextId === channel?.id).length > 0 ? 'has-activity' : ''}`}
+          onClick={() => setShowActivityPicker(true)}
+          title="Start Activity"
+        >
+          <RocketLaunchIcon size={28} />
+        </button>
+
+        <button 
+          className={`voice-control-btn chat-btn ${tempChat.isVisible ? 'active' : ''}`}
+          onClick={tempChat.toggleVisibility}
+          title={tempChat.isVisible ? 'Hide Voice Chat' : 'Show Voice Chat'}
+        >
+          <ChatBubbleLeftRightIcon size={28} />
+          {tempChat.unreadCount > 0 && !tempChat.isVisible && (
+            <span className="voice-chat-unread-badge">{tempChat.unreadCount > 9 ? '9+' : tempChat.unreadCount}</span>
+          )}
         </button>
 
         <button 
@@ -4489,7 +6804,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
           onClick={handleLeave}
           title={t('misc.leaveVoiceChannel')}
         >
-          <PhoneOff size={24} />
+          <PhoneXMarkIcon size={28} />
         </button>
 
         <button 
@@ -4497,17 +6812,31 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
           title={t('misc.voiceSettings')}
           onClick={onOpenSettings}
         >
-          <Settings size={24} />
+          <CogIcon size={28} />
         </button>
 
         <button 
           className={`voice-control-btn ${showVoiceFX ? 'active' : ''}`}
-          title={t('misc.voiceEffects')}
+          title={t('misc.voiceEffects', 'Voice Effects')}
           onClick={() => setShowVoiceFX(true)}
         >
-          <Music size={24} />
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" width="28" height="28">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />
+          </svg>
         </button>
       </div>
+
+      <VoiceChannelTempChat
+        messages={tempChat.messages}
+        onSendMessage={tempChat.sendMessage}
+        isVisible={tempChat.isVisible}
+        onToggleVisibility={tempChat.toggleVisibility}
+        notificationsEnabled={tempChat.notificationsEnabled}
+        onToggleNotifications={() => tempChat.setNotificationsEnabled(prev => !prev)}
+        unreadCount={tempChat.unreadCount}
+        onMarkAsRead={tempChat.markAsRead}
+        participants={participants}
+      />
 
       {/* Participant right-click context menu */}
       {participantMenu && (() => {
@@ -4516,8 +6845,25 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
         const canMuteScreenShare = participantMenu.canMuteForMe && !!menuParticipant?.isScreenSharing
         const menuW = 240
         const menuH = participantMenu.canMuteForMe ? (canMuteScreenShare ? 290 : 250) : 145
-        const x = Math.min(participantMenu.x, window.innerWidth  - menuW - 8)
-        const y = Math.min(participantMenu.y, window.innerHeight - menuH - 8)
+        
+        // Position menu at cursor, but flip if near edges
+        let x = participantMenu.x
+        let y = participantMenu.y
+        
+        // If too close to right edge, position menu to the left of cursor
+        if (x + menuW > window.innerWidth - 8) {
+          x = x - menuW
+        }
+        // Ensure minimum left padding
+        if (x < 8) x = 8
+        
+        // If too close to bottom edge, position menu above cursor
+        if (y + menuH > window.innerHeight - 8) {
+          y = y - menuH
+        }
+        // Ensure minimum top padding
+        if (y < 8) y = 8
+        
         return (
           <>
             <div
@@ -4553,7 +6899,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
                 }}
                 title={participantMenu.isPinned || participantMenu.isMain ? t('chat.clearFocus', 'Clear focus from main view') : t('chat.focusInMainView', 'Focus in main view')}
               >
-                {participantMenu.isPinned || participantMenu.isMain ? <MonitorOff size={14} /> : <Monitor size={14} />}
+                {participantMenu.isPinned || participantMenu.isMain ? <ComputerDesktopIcon size={14} /> : <ComputerDesktopIcon size={14} />}
                 {participantMenu.isPinned || participantMenu.isMain ? t('chat.clearFocus', 'Clear Focus') : t('chat.focusInMainView', 'Focus in Main View')}
               </button>
               <button
@@ -4582,7 +6928,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
                 }}
                 title={ls.screenShareMuted ? t('chat.unmuteScreenshare', 'Unmute screenshare') : t('chat.muteScreenshare', 'Mute screenshare')}
               >
-                {ls.screenShareMuted ? <Monitor size={14} /> : <MonitorOff size={14} />}
+                {ls.screenShareMuted ? <ComputerDesktopIcon size={14} /> : <ComputerDesktopIcon size={14} />}
                 {ls.screenShareMuted ? t('chat.unmuteScreenshare', 'Unmute screenshare') : t('chat.muteScreenshare', 'Mute screenshare')}
               </button>
               )}
@@ -4596,7 +6942,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
                 }}
                 title={ls.muted ? t('chat.unmuteForMe', 'Unmute for me') : t('chat.muteForMe', 'Mute for me')}
               >
-                {ls.muted ? <Volume2 size={14} /> : <VolumeX size={14} />}
+                {ls.muted ? <SpeakerWaveIcon size={14} /> : <SpeakerXMarkIcon size={14} />}
                 {ls.muted ? t('chat.unmuteForMe') : t('chat.muteForMe')}
               </button>
               <div 
@@ -4638,6 +6984,20 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
               </button>
                 </>
               )}
+              {isServerAdmin && participantMenu.userId !== user?.id && (
+                <button
+                  className="vpm-item vpm-danger"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    e.preventDefault()
+                    forceParticipantReconnect(participantMenu.userId)
+                  }}
+                  title={t('chat.forceReconnect', 'Force user to reconnect')}
+                >
+                  <RocketLaunchIcon size={14} />
+                  {t('chat.forceReconnect', 'Force Reconnect')}
+                </button>
+              )}
             </div>
           </>
         )
@@ -4667,6 +7027,34 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
           applyVoiceFXEffect('none', {})
         }}
       />
+
+      {/* Screen Share Picker Modal */}
+      <ScreenSharePicker
+        isOpen={showScreenSharePicker}
+        onClose={() => setShowScreenSharePicker(false)}
+        onSelect={handleScreenShareSourceSelect}
+      />
+
+      <StreamOverlayModal
+        isOpen={showOverlayStudio}
+        onClose={() => setShowOverlayStudio(false)}
+        target={overlayTarget}
+        onTargetChange={setOverlayTarget}
+        sourceStream={overlayTarget === 'screen' ? (rawScreenStreamRef.current || screenStream) : (rawLocalVideoStreamRef.current || localVideoStream)}
+        overlays={overlayTarget === 'screen' ? screenOverlays : cameraOverlays}
+        onChange={overlayTarget === 'screen' ? setScreenOverlays : setCameraOverlays}
+      />
+
+      {showActivityPicker && (
+        <ActivityPicker
+          socket={socket}
+          contextType="voice"
+          contextId={channel?.id}
+          participantsCount={displayParticipants.length}
+          onClose={() => setShowActivityPicker(false)}
+          onLaunch={handleActivityLaunch}
+        />
+      )}
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Bot, Plus, Trash2, RefreshCw, Copy, Eye, EyeOff, Settings, Server, Key, Globe, Code } from 'lucide-react'
+import { SparklesIcon, PlusIcon, TrashIcon, ArrowPathIcon, ClipboardDocumentIcon, EyeIcon, EyeSlashIcon, CogIcon, ServerStackIcon, KeyIcon, GlobeAltIcon, CodeBracketIcon } from '@heroicons/react/24/outline'
 import { useTranslation } from '../hooks/useTranslation'
 import { apiService } from '../services/apiService'
 import './BotPanel.css'
@@ -14,7 +14,8 @@ const ALL_PERMISSIONS = [
   { id: 'members:manage', label: 'Manage Members' },
   { id: 'reactions:add', label: 'Add Reactions' },
   { id: 'voice:connect', label: 'Connect to Voice' },
-  { id: 'server:manage', label: 'Manage Server' }
+  { id: 'server:manage', label: 'Manage Server' },
+  { id: 'roles:manage', label: 'Manage Roles' }
 ]
 
 const ALL_INTENTS = [
@@ -162,17 +163,17 @@ const BotPanel = () => {
       {newToken && (
         <div className="token-reveal">
           <div className="token-header">
-            <Key size={16} />
+            <KeyIcon size={16} />
             <strong>{t('botsPanel.tokenCreated', 'Bot Token Created')}</strong>
           </div>
           <p className="token-warning">{t('botsPanel.tokenWarning', 'Copy this token now. It will not be shown again.')}</p>
           <div className="token-value">
             <code>{showToken ? newToken : newToken.slice(0, 10) + '...' + newToken.slice(-6)}</code>
             <button className="btn btn-sm btn-ghost" onClick={() => setShowToken(!showToken)}>
-              {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+              {showToken ? <EyeSlashIcon size={14} /> : <EyeIcon size={14} />}
             </button>
             <button className="btn btn-sm btn-ghost" onClick={() => copyToClipboard(newToken)}>
-              <Copy size={14} />
+              <ClipboardDocumentIcon size={14} />
             </button>
           </div>
           <button className="btn btn-sm btn-primary" onClick={() => { setNewToken(null); setShowToken(false) }}>{t('common.done', 'Done')}</button>
@@ -183,9 +184,9 @@ const BotPanel = () => {
         <div className="section-header">
           <h3>{t('botsPanel.myBots', 'My Bots')}</h3>
           <div className="section-actions">
-            <button className="btn btn-sm btn-ghost" onClick={loadBots} title={t('common.refresh', 'Refresh')}><RefreshCw size={14} /></button>
+            <button className="btn btn-sm btn-ghost" onClick={loadBots} title={t('common.refresh', 'Refresh')}><ArrowPathIcon size={14} /></button>
             <button className="btn btn-sm btn-primary" onClick={() => { setShowCreate(true); setSelectedBot(null) }}>
-              <Plus size={14} /> {t('bots.createBot', 'Create Bot')}
+              <PlusIcon size={14} /> {t('bots.createBot', 'Create Bot')}
             </button>
           </div>
         </div>
@@ -194,7 +195,7 @@ const BotPanel = () => {
           <div className="loading-state">{t('botsPanel.loadingBots', 'Loading bots...')}</div>
         ) : bots.length === 0 && !showCreate ? (
           <div className="empty-state-small">
-            <Bot size={32} className="empty-icon" />
+            <SparklesIcon size={32} className="empty-icon" />
             <p>{t('botsPanel.noBotsYet', 'No bots yet. Create one to automate your servers.')}</p>
           </div>
         ) : (
@@ -206,7 +207,7 @@ const BotPanel = () => {
                 onClick={() => { setSelectedBot(bot); setShowCreate(false) }}
               >
                 <div className="bot-avatar">
-                  <Bot size={20} />
+                  <SparklesIcon size={20} />
                 </div>
                 <div className="bot-info">
                   <div className="bot-name">{bot.name}</div>
@@ -216,7 +217,7 @@ const BotPanel = () => {
                   </div>
                 </div>
                 <button className="btn btn-sm btn-ghost btn-danger" onClick={(e) => { e.stopPropagation(); handleDelete(bot.id) }}>
-                  <Trash2 size={14} />
+                  <TrashIcon size={14} />
                 </button>
               </div>
             ))}
@@ -322,7 +323,7 @@ const BotPanel = () => {
               )}
               {!showCreate && selectedBot && (
                 <button type="button" className="btn btn-warning" onClick={() => handleRegenToken(selectedBot.id)}>
-                  <Key size={14} /> {t('botsPanel.regenerateToken', 'Regenerate Token')}
+                  <KeyIcon size={14} /> {t('botsPanel.regenerateToken', 'Regenerate Token')}
                 </button>
               )}
             </div>

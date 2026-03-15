@@ -23,8 +23,8 @@ self.addEventListener('push', (event) => {
   const title = data.title || 'VoltChat'
   const options = {
     body: data.body || 'You have a new notification',
-    icon: data.icon || '/icon-192.png',
-    badge: data.badge || '/badge-72.png',
+    icon: data.icon || '/icon-192.svg',
+    badge: data.badge || '/badge-72.svg',
     tag: data.tag || 'voltchat-notification',
     data: data.data || {},
     actions: data.actions || [],

@@ -1,24 +1,28 @@
 import React, { useState, useEffect } from 'react'
-import { Search, Plus, Globe, Users, ArrowRight, Filter, Star, X, Hash, Gamepad2, Music, Palette, FlaskConical, GraduationCap, Film, Trophy, Briefcase, Calendar, Shield, Info, ChevronRight } from 'lucide-react'
+import { UsersIcon, ArrowRightIcon, StarIcon, HashtagIcon, BeakerIcon, FilmIcon, TrophyIcon, BriefcaseIcon, CalendarIcon, ShieldCheckIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
+import { Search, Plus, Globe, Users, ArrowRight, Filter, Star, X, Hash, Puzzle, Music, Palette, Beaker, GraduationCap, Film, Trophy, Briefcase, Calendar, ShieldCheck, Info, ChevronRight } from 'lucide-react'
 import { useTranslation } from '../hooks/useTranslation'
 import { useNavigate } from 'react-router-dom'
 import { apiService } from '../services/apiService'
 import { soundService } from '../services/soundService'
+import { normalizeDiscoveryCategories } from '../utils/discoveryCategories'
 import Avatar from './Avatar'
 import '../assets/styles/Discovery.css'
 
 const CATEGORY_ICONS = {
   'general': Hash,
-  'gaming': Gamepad2,
+  'gaming': Puzzle,
   'music': Music,
   'art': Palette,
-  'science': FlaskConical,
+  'science': Beaker,
   'education': GraduationCap,
   'entertainment': Film,
   'sports': Trophy,
   'business': Briefcase,
   'community': Users
 }
+
+const normalizeCategoryId = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '')
 
 const Discovery = ({ onJoinServer, onSubmitServer }) => {
   const { t } = useTranslation()
@@ -53,9 +57,10 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
   const loadCategories = async () => {
     try {
       const response = await apiService.getDiscoveryCategories()
-      setCategories(response.data)
+      setCategories(normalizeDiscoveryCategories(response.data))
     } catch (error) {
       console.error('Failed to load categories:', error)
+      setCategories(normalizeDiscoveryCategories([]))
     }
   }
 
@@ -131,7 +136,8 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
   }
 
   const filteredServers = servers.filter(server => {
-    if (selectedCategory !== 'all' && server.category !== selectedCategory) {
+    const serverCategory = normalizeCategoryId(server.category)
+    if (selectedCategory !== 'all' && serverCategory !== selectedCategory) {
       return false
     }
     if (searchQuery) {
@@ -141,6 +147,11 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
     }
     return true
   })
+
+  const categoriesById = categories.reduce((acc, cat) => {
+    acc[cat.id] = cat
+    return acc
+  }, {})
 
   const handleOpenServerProfile = async (server) => {
     setProfileLoading(true)
@@ -243,7 +254,9 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
           </div>
         ) : (
           <div className="discovery-grid">
-            {filteredServers.map(server => (
+            {filteredServers.map(server => {
+              const serverCategory = normalizeCategoryId(server.category)
+              return (
               <div key={server.id} className="discovery-card">
                 <div className="discovery-card-banner">
                   {server.bannerUrl ? (
@@ -262,12 +275,12 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
                   )}
                   <div className="discovery-card-meta">
                     <span className="discovery-card-members">
-                      <Users size={14} />
+                      <UsersIcon size={14} />
                       {server.memberCount || 0} members
                     </span>
-                    {server.category && (
+                    {serverCategory && (
                       <span className="discovery-card-category">
-                        {categories.find(c => c.id === server.category)?.icon} {categories.find(c => c.id === server.category)?.name}
+                        {categoriesById[serverCategory]?.name || serverCategory}
                       </span>
                     )}
                   </div>
@@ -284,12 +297,13 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
                       onClick={() => handleJoinServer(server)}
                     >
                       Join Server
-                      <ArrowRight size={16} />
+                      <ArrowRightIcon size={16} />
                     </button>
                   </div>
                 </div>
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>
@@ -316,7 +330,7 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
                     }}></div>
                   )}
                   <button className="modal-close" onClick={() => setSelectedServerProfile(null)}>
-                    <X size={20} />
+<X size={20} />
                   </button>
                 </div>
                 
@@ -333,10 +347,11 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
                     {selectedServerProfile.category && (
                       <span className="server-profile-category">
                         {(() => {
-                          const IconComponent = CATEGORY_ICONS[selectedServerProfile.category] || Globe
+                          const categoryId = normalizeCategoryId(selectedServerProfile.category)
+                          const IconComponent = CATEGORY_ICONS[categoryId] || Globe
                           return <IconComponent size={14} />
                         })()}
-                        {categories.find(c => c.id === selectedServerProfile.category)?.name || selectedServerProfile.category}
+                        {categoriesById[normalizeCategoryId(selectedServerProfile.category)]?.name || normalizeCategoryId(selectedServerProfile.category)}
                       </span>
                     )}
                   </div>
@@ -354,7 +369,7 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
 
                   <div className="server-profile-stats">
                     <div className="server-profile-stat">
-                      <Users size={20} />
+                      <UsersIcon size={20} />
                       <div className="stat-info">
                         <span className="stat-value">{selectedServerProfile.memberCount || 0}</span>
                         <span className="stat-label">Members</span>
@@ -375,7 +390,7 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
                       </div>
                     </div>
                     <div className="server-profile-stat">
-                      <Shield size={20} />
+                      <ShieldCheckIcon size={20} />
                       <div className="stat-info">
                         <span className="stat-value">{selectedServerProfile.roleCount || 0}</span>
                         <span className="stat-label">Roles</span>
@@ -385,12 +400,12 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
 
                   <div className="server-profile-details">
                     <div className="server-profile-detail">
-                      <Calendar size={16} />
+                      <CalendarIcon size={16} />
                       <span>Created {formatDate(selectedServerProfile.createdAt)}</span>
                     </div>
                     {selectedServerProfile.verificationRequired && (
                       <div className="server-profile-detail verification">
-                        <Shield size={16} />
+                        <ShieldCheckIcon size={16} />
                         <span>Verification required to join</span>
                       </div>
                     )}
@@ -405,7 +420,7 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
                       }}
                     >
                       Join Server
-                      <ArrowRight size={16} />
+                      <ArrowRightIcon size={16} />
                     </button>
                   </div>
                 </div>
@@ -421,8 +436,8 @@ const Discovery = ({ onJoinServer, onSubmitServer }) => {
             <div className="modal-header">
               <h2>Submit Server to Discovery</h2>
               <button className="modal-close" onClick={() => setShowSubmitModal(false)}>
-                <X size={20} />
-              </button>
+                  <X size={20} />
+                </button>
             </div>
             <form onSubmit={handleSubmitServer} className="discovery-submit-form">
               {submitSuccess && (

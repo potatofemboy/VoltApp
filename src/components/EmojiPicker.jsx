@@ -1,21 +1,49 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { Search, X, Loader, Heart, Star } from 'lucide-react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { MagnifyingGlassIcon, XMarkIcon, ArrowPathIcon, HeartIcon, ArrowsPointingOutIcon } from '@heroicons/react/24/outline'
 import { useAppStore } from '../store/useAppStore'
 import { useTranslation } from '../hooks/useTranslation'
+import emojiNameMap from 'emoji-name-map'
 import '../assets/styles/EmojiPicker.css'
 
-const TENOR_API_KEY = 'AIzaSyAyimkuYQYF_FXVALexPuGQctUWRURdCYQ'
 const PAGE_SIZE = 24
 const FAV_KEY = 'voltchat_fav_gifs'
 
+const MIN_WIDTH = 280
+const MAX_WIDTH = 500
+const MIN_HEIGHT = 300
+const MAX_HEIGHT = 500
+
 const EMOJI_CATEGORIES = {
-  'Smileys': ['😀','😃','😄','😁','😆','😅','🤣','😂','🙂','😊','😇','🥰','😍','🤩','😘','😗','😚','😙','🥲','😋','😛','😜','🤪','😝','🤑','🤗','🤭','🤫','🤔','🤐','🤨','😐','😑','😶','😏','😒','🙄','😬','😮‍💨','🤥','😌','😔','😪','🤤','😴','😷','🤒','🤕','🤢','🤮','🤧','🥵','🥶','🥴','😵','🤯','🤠','🥳','🥸','😎','🤓','🧐'],
-  'Gestures': ['👍','👎','👊','✊','🤛','🤜','🤞','✌️','🤟','🤘','🤙','👈','👉','👆','👇','☝️','👋','🤚','🖐️','✋','🖖','👌','🤌','🤏','👏','🙌','👐','🤲','🤝','🙏','💪','🦾','🦿','🦵','🦶'],
-  'Hearts': ['❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💟'],
-  'Objects': ['⚡','🔥','✨','🎉','🎊','🎁','🏆','🥇','🎯','🎮','🎲','🎸','🎺','🎻','🎹','🥁','💻','📱','⌨️','🖥️','💾','📷','📸','🎬','📺','📻','⏰','💡','🔋','🔌'],
-  'Nature': ['🌸','🌺','🌻','🌼','🌷','🌹','🥀','🌲','🌳','🌴','🌵','🍀','☘️','🍃','🍂','🍁','🌾','🌱','🌿','☀️','🌙','⭐','🌟','✨','⚡','🔥','🌈','☁️','❄️','💧'],
-  'Food': ['🍎','🍐','🍊','🍋','🍌','🍉','🍇','🍓','🫐','🍒','🍑','🥭','🍍','🥥','🥝','🍅','🥑','🍔','🍕','🌮','🌯','🍜','🍝','🍣','🍱','🍩','🍪','🎂','🍰','🧁','☕','🍵','🍺','🍷','🥤'],
+  'Smileys': ['😀','😃','😄','😁','😆','😅','🤣','😂','🙂','😊','😇','🥰','😍','🤩','😘','😗','😚','😙','🥲','😋','😛','😜','🤪','😝','🤑','🤗','🤭','🤫','🤔','🤐','🤨','😐','😑','😶','😏','😒','🙄','😬','😮‍💨','🤥','😌','😔','😪','🤤','😴','😷','🤒','🤕','🤢','🤮','🤧','🥵','🥶','🥴','😵','🤯','🤠','🥳','🥸','😎','🤓','🧐','😕','😟','🙁','☹️','😮','😯','😲','😳','🥺','😦','😧','😨','😰','😥','😢','😭','😱','😖','😣','😞','😓','😩','😫','🥱','😤','😡','😠','🤬','😈','👿','💀','☠️','💩','🤡','👹','👺','👻','👽','👾','🤖','😺','😸','😹','😻','😼','😽','🙀','😿','😾','🙈','🙉','🙊','💋','💌','💘','💝','💟','❣️','💔','🧡','💛','💚','💙','💜','🤎','🤍','🖤','💯','💢','💥','💫','💦','💨','🕳️','💣','💬','👁️‍🗨️','🗨️','🗯️','💭','💤','🔥','✨','⭐','🌟','💫','💥','💢','💦','💨','🕐','🕑','🕒','🕓','🕔','🕕','🕖','🕗','🕘','🕙','🕚','🕛','🕜','🕝','🕞','🕟','🕠','🕡','🕢','🕣','🕤','🕥','🕦','🕧','⌛','⏳','⌚','⏰','⏱️','⏲️','🕰️','🗓️','🗑️','➡️','⬅️','⬆️','⬇️','↗️','↘️','↙️','↖️','↕️','↔️','↩️','↪️','⤴️','⤵️','🔃','🔄','🔙','🔚','🔛','🔜','🔝','🛐','⛎','♈','♉','♊','♋','♌','♍','♎','♏','♐','♑','♒','♓','🆔','⚛️','🉑','☢️','☣️','📴','📳','🈶','🈚','🈸','🈺','🈷️','✴️','🆚','💮','🉐','㊙️','㊗️','🈴','🈵','🈹','🈲','🅰️','🅱️','🆎','🆑','🅾️','🆘','❌','⭕','🛑','⛔','📛','🚫','💯','💢','♨️','🚷','🚯','🚳','🚱','🔞','📵','🚭','❗','❕','❓','❔','‼️','⁉️','🔅','🔆','〽️','⚠️','🚸','🔱','⚜️','🔰','♻️','✅','🈯','💹','❇️','✳️','❎','🌐','💠','Ⓜ️','🌀','💤','🏧','🚮','🚰','♿','🚹','🚺','🚼','⚧️','🚻','🚮','🏷️','📛','🔰','✅','🈯','💹','❇️','✳️','❎','🌐','💠','Ⓜ️','🌀','💤'],
+  'Gestures': ['👍','👎','👊','✊','🤛','🤜','🤞','✌️','🤟','🤘','🤙','👈','👉','👆','👇','☝️','👋','🤚','🖐️','✋','🖖','👌','🤌','🤏','👏','🙌','👐','🤲','🤝','🙏','💪','🦾','🦿','🦵','🦶','👂','🦻','👃','🧠','🫀','🫁','🦷','🦴','👀','👁️','👅','👄','👶','🧒','👦','👧','🧑','👱','👨','🧔','👩','🧓','👴','👵','🙍','🙎','🙅','🙆','💁','🙋','🧏','🙇','🤦','🤷','👮','🕵️','💂','🥷','👷','🤴','👸','👳','👲','🧕','🤵','👰','🤰','🤱','👼','🎅','🤶','🦸','🦹','🧙','🧚','🧛','🧜','🧝','🧞','🧟','💆','💇','🚶','🏃','💃','🕺','🕴️','👯','🧖','🧗','🤸','🏌️','🏇','⛷️','🏂','🏋️','🤸','🤺','🤾','🏇','🧘','🛀','🛌','👭','👫','👬','💏','💑','👪','👨‍👩‍👦','👨‍👩‍👧','👨‍👩‍👧‍👦','👨‍👩‍👦‍👦','👨‍👩‍👧‍👧','👨‍👩‍👧‍👦','👨‍👩‍👧‍👧','👨‍👩‍👦‍👦','👨‍👩‍👦‍👧','👨‍👩‍👧‍👦','👨‍👩‍👧‍👧','👨‍👦','👨‍👦‍👦','👨‍👧','👨‍👧‍👦','👨‍👧‍👧','👩‍👦','👩‍👦‍👦','👩‍👧','👩‍👧‍👦','👩‍👧‍👧','👨‍👨‍👦','👨‍👨‍👧','👨‍👨‍👦‍👦','👨‍👨‍👧‍👦','👨‍👨‍👧‍👧','👩‍👩‍👦','👩‍👩‍👧','👩‍👩‍👦‍👦','👩‍👩‍👧‍👦','👩‍👩‍👧‍👧','🧑‍🤝‍🧑','🧑‍❤️‍💋‍🧑','👨‍❤️‍💋‍👨','👩‍❤️‍💋‍👩','👨‍👩‍❤️','👨‍👩‍💋','👨‍👩‍👨‍👩‍❤️','👨‍👩‍👧','👨‍👩‍👧‍👧','🧗','🤸','🏌️','🏇','⛷️','🏂','🏋️','🤸','🤺','🤾','🏇','🧘','🛀','🛌','👭','👫','👬','💏','💑','👪','🚴','🚵','🧗‍♀️','🧗‍♂️','🏇','⛹️','🏋️','🤸','⛳','🏌️','🏇','🧘','🏄','🏊','🤽','🚣','🧘','🛀','🛌','🤸','🤺','🤾','🏇','🧖','🚴','🚵','🏄','🏊','🤽','🚣'],
+  'Hearts': ['❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💟','♥️','😻','💌','💒','🏩','🫀','🫁','🥰','😍','🤩','😘','😗','😚','😙','🥲','😋','😛','😜','🤪','😝','🤑','🤗','🤭','🤫','💋','👩‍❤️‍👨','👨‍❤️‍👨','👩‍❤️‍👩','💑','👫','👩‍❤️‍💋‍👨','👨‍❤️‍💋‍👨','👩‍❤️‍💋‍👩','🧑‍🤝‍🧑','🧑‍❤️‍🧑','👩‍❤️‍👨','👨‍❤️‍👨','👩‍❤️‍👩','👨‍👩‍❤️','👩‍❤️‍👨','👨‍❤️‍👩','💏','👪','👨‍👩‍👦','👨‍👩‍👧','👨‍👩‍👧‍👦','👨‍👩‍👧‍👧','🧑‍🤝‍🧑'],
+  'Objects': ['⚡','🔥','✨','🎉','🎊','🎁','🏆','🥇','🎯','🎮','🎲','🎸','🎺','🎻','🎹','🥁','💻','📱','⌨️','🖥️','💾','📷','📸','🎬','📺','📻','⏰','💡','🔋','🔌','💰','🪙','💴','💵','💶','💷','💎','⚖️','🪜','🧰','🪛','🔧','🔨','⚒️','🛠️','⛏️','🪚','🔩','⚙️','🪤','🧱','⛓️','🧲','🔫','💣','🧨','🪓','🔪','🗡️','⚔️','🛡️','🚬','⚰️','🪦','⚱️','🏺','🔮','📿','🧿','💈','⚗️','🔭','🔬','🕹️','🧩','♟️','🃏','🎴','🎭','🖼️','🧵','🪡','🧶','🪢','🎪','🤹','🎨','🧵','🎪','🎭','🎨','🎬','🎤','🎧','🎼','🎹','🥁','🎷','🎺','🎸','🪕','🎻','🎲','🎯','🎳','🎮','🎰','🧩','♠️','♣️','♥️','♦️','🃏','🎴','🎫','🏧','🚮','🚰','♿','🚹','🚺','🚼','⚧️','🚻','🚮','🏷️','📛','🔰','✅','🈯','💹','❇️','✳️','❎','🌐','💠','Ⓜ️','🌀','💤','🏢','🏠','🏗️','🧱','🪨','🪵','🛖','🛤️','🛣️','🗺️','🗿','🗽','🗼','🏰','🏯','🏟️','🎡','🎢','🎠','⛲','⛱️','🏖️','🏝️','🏜️','🌋','⛰️','🏔️','🗻','🏕️','⛺','🛖','🏠','🏡','🏢','🏣','🏤','🏥','🏦','🏨','🏩','🏪','🏫','🏬','🏭','🏯','🏰','💒','🗼','🗽','⛪','🕌','🕍','🛕','🕋','⛩️','🛤️','🛣️','🗺️','🗿','🗽','🗼','🏰','🏯','🏟️','🎡','🎢','🎠','⛲','⛱️','🏖️','🏝️','🏜️','🌋','⛰️','🏔️','🗻','🏕️','⛺','🛖','🏠','🏡','🗝️','🔑','🗝️','🚪','🪑','🛋️','🛏️','🛌','🧸','🪆','🖼️','🪞','🪟','🛍️','🛒','🎁','🎈','🎏','🎀','🧄','🧅','🥚','🍳','🧈','🥞','🧇','🥖','🥨','🥯','🥯','🧀','🥗','🥙','🥪','🌯','🌮','🍕','🍟','🍔','🌭','🥪','🥙','🧆','🍜','🍝','🍣','🍱','🍙','🍚','🍛','🍜','🍲','🍥','🥠','🥮','🍢','🍡','🍧','🍨','🍦','🥧','🧁','🍰','🎂','🍮','🍭','🍬','🍫','🍿','🍩','🍪','🌰','🥜','🍯','🥛','🍼','☕','🍵','🧃','🥤','🍶','🍺','🍻','🥂','🍷','🥃','🍸','🍹','🧉','🍾','🧊','🧂','🥣','🥤','🍽️','🍴','🥄','🔪','🏺','🎃','🎄','🎆','🎇','🧨','🎈','🎉','🎊','🎎','🎏','🎐','🧧','🎑','🕎','🧘','🛀','🛁','🚿','🧴','🛎️','🔑','🗝️','🚪','🪑','🛋️','🛏️','🛌','🧸','🪆','🖼️','🪞','🪟','🛍️','🛒','🎁','🎈','🎏','🎀','🧧','💰','💳','💵','💴','💶','💷','🪙','💸','💳','🧾','🧾','📦','📫','📬','📭','📮','📯','📜','📃','📄','📑','🧾','📊','📈','📉','🗒️','🗓️','📆','📅','🗑️','📇','📈','📉','📊','📋','📌','📍','📎','🖇️','📏','📐','✂️','🗃️','🗳️','🗄️','📚','📖','📗','📘','📙','📓','📔','📒','📕','📗','📘','📙','📚','📙','🧷','🧸','🧹','🧺','🧻','🚽','🚰','🚿','🛁','🧼','🪥','🪒','🧽','🪣','🧴','🛎️','🔑','🗝️','🚪','🪑','🛋️','🛏️','🛌','🧸','🪆','🖼️','🪞','🪟','🛍️','🛒','🎁','🧧','🎓','🎒','👑','🎩','🎓','🧢','🧤','🧥','🧦','👔','👕','👖','🧣','🧤','🧥','🧦','👗','👘','🥻','🩱','🩲','🩳','👙','👚','👛','👜','👝','🎒','👞','👟','🥾','🥿','👠','👡','👢','🩰','👑','👒','🎩','🎓','🧢','💄','💍','💎','💼','🥊','🥋','🎽','🎿','🥌','🎯','🎱','🎳','🎮','🎰'],
+  'Nature': ['🌸','🌺','🌻','🌼','🌷','🌹','🥀','🌲','🌳','🌴','🌵','🍀','☘️','🍃','🍂','🍁','🌾','🌱','🌿','☀️','🌙','⭐','🌟','✨','⚡','🔥','🌈','☁️','❄️','💧','🌊','💦','🚿','🛁','🧊','🌪️','🌤','⛅','🌥️','☁️','🌦️','🌧️','⛈️','🌩️','🌨️','❄️','☃️','⛄','🌬️','💨','💧','💦','☔','☂️','🌊','🌋','⛰️','🏔️','🗻','🏕️','🏖️','🏜️','🏝️','🏞️','🏟️','🏛️','🏗️','🧱','🪨','🪵','🛖','🏘️','🏚️','🏠','🏡','🏢','🏣','🏤','🏥','🏦','🏨','🏩','🏪','🏫','🏬','🏭','🏯','🏰','💒','🗼','🗽','⛪','🕌','🕍','🛕','🕋','⛩️','🛤️','🛣️','🗺️','🗿','🗽','🗼','🏰','🏯','🏟️','🎡','🎢','🎠','⛲','⛱️','🏖️','🏝️','🏜️','🌋','⛰️','🏔️','🗻','🏕️','⛺','🛖','🏠','🏡','🌅','🌄','🌠','🎇','🎆','🌇','🌆','🏙️','🌃','🌌','🌉','🌁','🌦️','🌧️','⛈️','🌩️','🌨️','❄️','☃️','⛄','🌬️','💨','🧊','❄️','⛄','☃️','🌨️','🌧️','🌦️','🌥️','⛅','🌤️','☀️','🌙','🌛','🌜','🌚','🌝','🌞','🌟','⭐','🌠','🌌','🌍','🌎','🌏','🌐','🗺️','🗿','🏔️','⛰️','🌋','🗻','🏕️','🏖️','🏜️','🏝️','🏞️','🏟️','🧭','🏹','🎯','🪃','🪁','🪂','🛡️','🛡️','⚔️','💣','🧨','🪓','🔪','🗡️','⚔️','🚬','⚰️','🪦','⚱️','🏺','🔮','📿','🧿','💈','⚗️','🔭','🔬','🕹️','🧩','♟️','🃏','🎴','🎭','🖼️','🎪','🤹','🎨','🎬','🎤','🎧','🎼','🎹','🥁','🎷','🎺','🎸','🪕','🎻','🎲','🎯','🎳','🎮','🎰','🍀','☘️','🍁','🍂','🍃','🌿','🌱','🌲','🌳','🌴','🌵','🌾','🌿','☘️','🍀','🍃','🍂','🍄','🍅','🍆','🥑','🥦','🥬','🥒','🌶️','🫑','🌽','🥕','🫒','🧄','🧅','🥔','🍠','🥐','🥯','🍞','🥖','🥨','🧀','🥚','🍳','🧈','🥞','🧇','🥓','🥩','🍗','🍖','🦴','🌭','🍔','🍟','🍕','🥪','🥙','🧆','🌮','🌯','🫔','🥗','🥘','🫕','🍝','🍜','🍲','🍛','🍣','🍱','🥟','🥠','🥮','🍤','🍙','🍚','🍘','🍥','🥣','🥤','🍺','🍻','🥂','🍷','🥃','🍸','🍹','🍾','🧃','🥤','🧋','🧊','🥛','🍼','☕','🍵','🧉','🍶'],
+  'Animals': ['🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐻‍❄️','🐨','🐯','🦁','🐮','🐷','🐽','🐸','🐵','🙈','🙉','🙊','🐒','🐔','🐧','🐦','🐤','🐣','🐥','🦆','🦅','🦉','🦇','🐺','🐗','🐴','🦄','🐝','🪱','🐛','🦋','🐌','🐞','🐜','🪰','🪲','🪳','🦟','🦗','🕷️','🕸️','🦂','🐢','🐍','🦎','🦖','🦕','🐙','🦑','🦐','🦞','🦀','🐡','🐠','🐟','🐬','🐳','🐋','🦈','🐊','🐅','🐆','🦓','🦍','🦧','🦣','🐘','🦛','🦏','🐪','🐫','🦒','🦘','🦬','🐃','🐂','🐄','🐎','🐖','🐏','🐑','🦙','🐐','🦌','🐕','🐩','🦮','🐈','🐈‍⬛','🪶','🐓','🦃','🦤','🦚','🦜','🦢','🦩','🕊️','🐇','🦝','🦨','🦡','🦫','🦦','🦥','🐁','🐀','🐿️','🦔','🐾','🐉','🐲','🌵','🎄','🌲','🌳','🌴','🪵','🐚','🪸','🐌','🐛','🦋','🐝','🐜','🪰','🪲','🪳','🦟','🦗','🕷️','🕸️','🦂','🐢','🐍','🦎','🦖','🦕','🐙','🦑','🦐','🦞','🦀','🐡','🐠','🐟','🐳','🐋','🐬','🦈','🐊','🐅','🐆','🦓','🦍','🦧','🦣','🐘','🦛','🦏','🐪','🐫','🦒','🦘','🦬','🐃','🐂','🐄','🐎','🐖','🐏','🐑','🦙','🐐','🦌','🐕','🐩','🦮','🐈','🐈‍⬛','🪶','🐓','🦃','🦤','🦚','🦜','🦢','🦩','🕊️','🐇','🦝','🦨','🦡','🦫','🦦','🦥','🐁','🐀','🐿️','🦔'],
+  'Flags': ['🏳️','🏴','🏴‍☠️','🏴‍🏳️','🏁','🚩','🎌','🏳️‍🌈','🏳️‍⚧️','🇺🇸','🇬🇧','🇨🇦','🇦🇺','🇩🇪','🇫🇷','🇪🇸','🇮🇹','🇯🇵','🇰🇷','🇧🇷','🇲🇽','🇮🇳','🇨🇳','🇷🇺','🇿🇦','🇳🇬','🇪🇬','🇸🇪','🇳🇱','🇧🇪','🇨🇭','🇦🇹','🇵🇱','🇳🇴','🇩🇰','🇫🇮','🇮🇪','🇳🇿','🇸🇬','🇲🇾','🇮🇩','🇹🇷','🇸🇦','🇮🇱','🇵🇹','🇬🇷','🇨🇿','🇭🇺','🇷🇴','🇧🇬','🇺🇦','🇨🇿','🇭🇷','🇸🇮','🇱🇹','🇱🇻','🇪🇪','🇱🇾','🇲🇦','🇩🇿','🇹🇳','🇰🇪','🇰🇬','🇺🇿','🇹🇯','🇹🇿','🇲🇲','🇵🇭','🇻🇳','🇹🇭','🇱🇦','🇲🇩','🇬🇪','🇦🇲','🇦🇿','🇰🇿','🇧🇾','🇰🇼','🇶🇦','🇧🇭','🇴🇲','🇾🇹','🇮🇶','🇯🇴','🇱🇧','🇸🇾','🇾🇪','🇸🇹','🇵🇸','🇦🇱','🇲🇪','🇽🇰','🇲🇰','🇦🇫','🇦🇮','🇧🇧','🇯🇲','🇹🇹','🇩🇲','🇦🇬','🇰🇳','🇱🇨','🇲🇸','🇦🇮','🇧🇲','🇻🇬','🇹🇨','🇹🇻','🇨🇼','🇸🇷','🇭🇹','🇵🇷','🇻🇮','🇦🇼','🇧🇶','🇨🇩','🇨🇲','🇨🇫','🇬🇶','🇬🇼','🇳🇪','🇸🇳','🇸🇱','🇸🇸','🇸🇴','🇸🇩','🇸🇧','🇵🇾','🇺🇾','🇧🇴','🇧🇼','🇱🇸','🇸🇿','🇿🇦','🇳🇦','🇲🇿','🇲🇬','🇲🇼','🇿🇲','🇨🇦','🇺🇸','🇲🇽','🇧🇷','🇦🇷','🇨🇴','🇨🇱','🇵🇪','🇻🇪','🇵🇦','🇨🇷','🇬🇹','🇧🇿','🇭🇳','🇸🇻','🇳🇮','🇨🇺','🇩🇴','🇯🇲','🇭🇹','🇹🇹','🇧🇲','🇧🇦','🇦🇬','🇦🇮','🇧🇧','🇨🇼','🇭🇳','🇲🇶','🇲� Martinique','🇬🇵','🇬🇪','🇸🇨','🇲🇺','🇲🇻','🇫🇯','🇵🇫','🇼🇸','🇬🇺','🇲🇵','🇬🇫','🇵🇲','🇲🇫','🇳🇷','🇵🇳','🇼🇫','🇲🇭','🇵🇼','🇬🇾','🇲🇱','🇲🇾','🇸🇦','🇦🇪','🇶🇦','🇰🇼','🇴🇲','🇧🇭','🇹🇳','🇮🇶','🇮🇷','🇸🇮','🇭🇷','🇸🇲','🇨🇮','🇨🇬','🇨🇩','🇨🇲','🇨🇫','🇬🇶','🇬🇼','🇳🇪','🇸🇳','🇸🇱','🇸🇸','🇸🇴','🇸🇩','🇸🇧','🇵🇾','🇺🇾','🇧🇴','🇧🇼','🇱🇸','🇸🇿','🇿🇦','🇳🇦','🇲🇿','🇲🇬','🇲🇼','🇿🇲','🇨🇦','🇺🇸','🇲🇽','🇧🇷','🇦🇷','🇨🇴','🇨🇱','🇵🇪','🇻🇪','🇵🇦','🇨🇷','🇬🇹','🇧🇿','🇭🇳','🇸🇻','🇳🇮','🇨🇺','🇩🇴','🇯🇲','🇭🇹','🇹🇹','🇧🇲','🇧🇦','🇦🇬','🇦🇮','🇧🇧','🇨🇼','🇭🇳','🇲🇶','🇬🇵','🇬🇪','🇸🇨','🇲🇺','🇲🇻','🇫🇯','🇵🇫','🇼🇸','🇬🇺','🇲🇵','🇬🇫','🇵🇲','🇲🇫','🇳🇷','🇵🇳','🇼🇫','🇲🇭','🇵🇼','🇬🇾','🇲🇱','🇲🇾','🇦🇩','🇦🇮','🇦🇶','🇦🇬','🇦🇹','🇦🇼','🇦🇲','🇦🇪','🇦🇫','🇦🇫','🇦🇪','🇦🇬','🇦🇮','🇦🇲','🇦🇼','🇦🇹','🇦🇶'],
 }
+
+const ALL_EMOJIS = Object.entries(emojiNameMap.emoji).map(([name, emoji]) => ({ name, emoji }))
+
+const CATEGORY_ORDER = ['Smileys', 'Gestures', 'Hearts', 'Objects', 'Nature', 'Animals', 'Flags']
+
+const categorizeEmoji = (emoji) => {
+  const char = emoji.emoji
+  const code = char.codePointAt(0)
+  if (0x1F600 <= code && code <= 0x1F64F) return 'Smileys'
+  if (0x1F300 <= code && code <= 0x1F5FF) return 'Objects'
+  if (0x1F680 <= code && code <= 0x1F6FF) return 'Objects'
+  if (0x2600 <= code && code <= 0x26FF) return 'Nature'
+  if (0x2700 <= code && code <= 0x27BF) return 'Objects'
+  if (code >= 0x1F1E0 && code <= 0x1F1FF) return 'Objects'
+  if (code >= 0x1F900 && code <= 0x1F9FF) return 'Smileys'
+  return 'Smileys'
+}
+
+const categorizedEmojis = CATEGORY_ORDER.reduce((acc, cat) => {
+  acc[cat] = ALL_EMOJIS.filter(e => categorizeEmoji(e) === cat)
+  return acc
+}, {})
 
 function loadFavs() {
   try { return JSON.parse(localStorage.getItem(FAV_KEY)) || [] } catch { return [] }
@@ -24,18 +52,17 @@ function saveFavs(favs) {
   try { localStorage.setItem(FAV_KEY, JSON.stringify(favs)) } catch {}
 }
 
-const EmojiPicker = ({ onSelect, onClose, serverEmojis = [], showGifs = true }) => {
+const EmojiPicker = ({ onSelect, onClose, serverEmojis = [], showGifs = true, initialWidth, initialHeight }) => {
   const { t } = useTranslation()
   const globalEmojis = useAppStore(state => state.globalEmojis)
-  // Combine server emojis with global emojis - server emojis shown first
   const allEmojis = serverEmojis?.length > 0 
     ? [...serverEmojis, ...globalEmojis.filter(g => !serverEmojis.some(s => s.name === g.name))]
     : globalEmojis
-    
+     
   const [activeTab, setActiveTab] = useState(allEmojis?.length > 0 ? 'server' : 'emoji')
   const [searchQuery, setSearchQuery] = useState('')
   const [gifs, setGifs] = useState([])
-  const [gifNext, setGifNext] = useState(null)   // Tenor next pos token
+  const [gifNext, setGifNext] = useState(null)
   const [loadingGifs, setLoadingGifs] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const [activeCategory, setActiveCategory] = useState('Smileys')
@@ -43,23 +70,52 @@ const EmojiPicker = ({ onSelect, onClose, serverEmojis = [], showGifs = true }) 
   const [recentEmojis, setRecentEmojis] = useState(() => {
     try { return JSON.parse(localStorage.getItem('voltchat_recent_emojis')) || [] } catch { return [] }
   })
+  
+  const [size, setSize] = useState({ width: initialWidth || 320, height: initialHeight || 360 })
+  const [isResizing, setIsResizing] = useState(false)
+  const resizeRef = useRef(null)
 
   const bottomRef = useRef(null)
   const searchRef = useRef(searchQuery)
   searchRef.current = searchQuery
+
+  const handleResizeStart = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsResizing(true)
+    
+    const startX = e.clientX
+    const startY = e.clientY
+    const startWidth = size.width
+    const startHeight = size.height
+
+    const handleMouseMove = (moveEvent) => {
+      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + (moveEvent.clientX - startX)))
+      const newHeight = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, startHeight + (moveEvent.clientY - startY)))
+      setSize({ width: newWidth, height: newHeight })
+    }
+
+    const handleMouseUp = () => {
+      setIsResizing(false)
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+  }, [size])
 
   // ── GIF fetching ──────────────────────────────────────────────────────────
   const fetchGifs = useCallback(async (query, pos = null, append = false) => {
     if (!query.trim()) { setGifs([]); setGifNext(null); return }
     append ? setLoadingMore(true) : setLoadingGifs(true)
     try {
-      const url = new URL('https://tenor.googleapis.com/v2/search')
-      url.searchParams.set('q', query)
-      url.searchParams.set('key', TENOR_API_KEY)
-      url.searchParams.set('limit', String(PAGE_SIZE))
-      url.searchParams.set('media_filter', 'gif,tinygif')
-      if (pos) url.searchParams.set('pos', pos)
-      const res = await fetch(url.toString())
+      // Use backend proxy to avoid CORS issues
+      const apiUrl = new URL('/api/gif/search', window.location.origin)
+      apiUrl.searchParams.set('q', query)
+      apiUrl.searchParams.set('limit', String(PAGE_SIZE))
+      if (pos) apiUrl.searchParams.set('pos', pos)
+      const res = await fetch(apiUrl.toString())
       const data = await res.json()
       setGifs(prev => append ? [...prev, ...(data.results || [])] : (data.results || []))
       setGifNext(data.next || null)
@@ -151,14 +207,20 @@ const EmojiPicker = ({ onSelect, onClose, serverEmojis = [], showGifs = true }) 
           onClick={(e) => toggleFav(gif, e)}
           title={faved ? 'Remove favourite' : 'Add to favourites'}
         >
-          <Heart size={12} fill={faved ? 'currentColor' : 'none'} />
+          <HeartIcon size={12} fill={faved ? 'currentColor' : 'none'} />
         </button>
       </div>
     )
   }
 
   return (
-    <div className="emoji-picker">
+    <div 
+      className={`emoji-picker${isResizing ? ' resizing' : ''}`}
+      style={{ width: size.width, height: size.height }}
+    >
+      <div className="emoji-picker-resize-handle" ref={resizeRef} onMouseDown={handleResizeStart}>
+        <ArrowsPointingOutIcon size={12} />
+      </div>
       <div className="emoji-picker-header">
         <div className="emoji-tabs">
           <button className={`emoji-tab ${activeTab === 'emoji' ? 'active' : ''}`} onClick={() => setActiveTab('emoji')}>😀</button>
@@ -169,22 +231,25 @@ const EmojiPicker = ({ onSelect, onClose, serverEmojis = [], showGifs = true }) 
             <>
               <button className={`emoji-tab ${activeTab === 'gif' ? 'active' : ''}`} onClick={() => setActiveTab('gif')}>GIF</button>
               <button className={`emoji-tab ${activeTab === 'favgif' ? 'active' : ''}`} onClick={() => setActiveTab('favgif')} title={t('emoji.favouriteGifs', 'Favourite GIFs')}>
-                <Heart size={14} fill={activeTab === 'favgif' ? 'currentColor' : 'none'} />
+                <HeartIcon size={14} fill={activeTab === 'favgif' ? 'currentColor' : 'none'} />
               </button>
             </>
           )}
         </div>
         <div className="emoji-search">
-          <Search size={14} />
+          <MagnifyingGlassIcon size={14} />
+          {activeTab === 'gif' && (
+            <span className="emoji-search-provider">KLIPY</span>
+          )}
           <input
             type="text"
-            placeholder={activeTab === 'gif' ? t('emoji.searchGifs', 'Search GIFs…') : activeTab === 'favgif' ? t('emoji.searchFavourites', 'Search favourites…') : t('emoji.searchEmoji', 'Search emoji…')}
+            placeholder={activeTab === 'gif' ? t('emoji.searchGifs', 'Search KLIPY') : activeTab === 'favgif' ? t('emoji.searchFavourites', 'Search favourites…') : t('emoji.searchEmoji', 'Search emoji…')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             autoFocus
           />
           {searchQuery && (
-            <button className="clear-search" onClick={() => setSearchQuery('')}><X size={12} /></button>
+            <button className="clear-search" onClick={() => setSearchQuery('')}><XMarkIcon size={12} /></button>
           )}
         </div>
       </div>
@@ -205,23 +270,26 @@ const EmojiPicker = ({ onSelect, onClose, serverEmojis = [], showGifs = true }) 
               </div>
             )}
             <div className="emoji-categories">
-              {Object.keys(EMOJI_CATEGORIES).map(category => (
+              {CATEGORY_ORDER.map(category => (
                 <button
                   key={category}
                   className={`emoji-category-btn ${activeCategory === category ? 'active' : ''}`}
                   onClick={() => { setActiveCategory(category); setSearchQuery('') }}
                   title={category}
                 >
-                  {EMOJI_CATEGORIES[category][0]}
+                  {categorizedEmojis[category]?.[0]?.emoji || '😀'}
                 </button>
               ))}
             </div>
             <div className="emoji-grid">
               {(searchQuery
-                ? Object.values(EMOJI_CATEGORIES).flat().filter(e => e.includes(searchQuery))
-                : EMOJI_CATEGORIES[activeCategory]
-              ).map((emoji, i) => (
-                <button key={i} className="emoji-btn" onClick={() => handleEmojiSelect(emoji)}>{emoji}</button>
+                ? ALL_EMOJIS.filter(e => 
+                    e.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                    e.emoji.includes(searchQuery)
+                  ).slice(0, 200)
+                : (categorizedEmojis[activeCategory] || [])
+              ).map((item, i) => (
+                <button key={i} className="emoji-btn" onClick={() => handleEmojiSelect(item.emoji)} title={`:${item.name}:`}>{item.emoji}</button>
               ))}
             </div>
           </>
@@ -246,7 +314,7 @@ const EmojiPicker = ({ onSelect, onClose, serverEmojis = [], showGifs = true }) 
         {activeTab === 'gif' && (
           <div className="gif-scroll-area">
             {loadingGifs ? (
-              <div className="gif-loading"><Loader className="spin" size={24} /></div>
+              <div className="gif-loading"><ArrowPathIcon className="spin" size={24} /></div>
             ) : gifs.length > 0 ? (
               <>
                 <div className="gif-grid">
@@ -256,7 +324,7 @@ const EmojiPicker = ({ onSelect, onClose, serverEmojis = [], showGifs = true }) 
                 </div>
                 {/* Infinite scroll sentinel */}
                 <div ref={bottomRef} style={{ height: 1 }} />
-                {loadingMore && <div className="gif-loading-more"><Loader className="spin" size={18} /></div>}
+                {loadingMore && <div className="gif-loading-more"><ArrowPathIcon className="spin" size={18} /></div>}
                 {!gifNext && gifs.length > 0 && (
                   <div className="gif-end">{t('emoji.noMoreResults', 'No more results')}</div>
                 )}
@@ -266,6 +334,14 @@ const EmojiPicker = ({ onSelect, onClose, serverEmojis = [], showGifs = true }) 
             ) : (
               <div className="gif-placeholder">{t('emoji.searchForGifs', 'Search for GIFs…')}</div>
             )}
+            <div className="gif-provider-footer">
+              <img
+                src="/attribution/Powered By KLIPY Horizontal -Yellow&Black Logo.svg"
+                alt="Powered by KLIPY"
+                className="gif-provider-logo"
+                loading="lazy"
+              />
+            </div>
           </div>
         )}
 
@@ -274,7 +350,7 @@ const EmojiPicker = ({ onSelect, onClose, serverEmojis = [], showGifs = true }) 
           <div className="gif-scroll-area">
             {favGifs.length === 0 ? (
               <div className="gif-placeholder">
-                <Heart size={24} style={{ opacity: 0.4 }} />
+                <HeartIcon size={24} style={{ opacity: 0.4 }} />
                 <span>No favourites yet.<br/>Click ♥ on any GIF to save it.</span>
               </div>
             ) : (
@@ -289,7 +365,7 @@ const EmojiPicker = ({ onSelect, onClose, serverEmojis = [], showGifs = true }) 
                         onClick={(e) => { e.stopPropagation(); toggleFav(fav, e) }}
                         title="Remove favourite"
                       >
-                        <Heart size={12} fill="currentColor" />
+                        <HeartIcon size={12} fill="currentColor" />
                       </button>
                     </div>
                   ))

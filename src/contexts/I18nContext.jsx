@@ -47,17 +47,27 @@ export const I18nProvider = ({ children }) => {
   }, [])
 
   // Translation function - gets translation for current language
+  // When no fallback is provided, returns the key itself if translation is missing
+  // When a fallback string is provided as second param, returns fallback if translation is missing
   const t = useCallback((key, fallbackOrReplacements = {}, maybeReplacements = {}) => {
     const { fallback, replacements } = normalizeTranslateArgs(fallbackOrReplacements, maybeReplacements)
     const translated = translateFn(language, key, replacements)
-    return translated === key && typeof fallback === 'string' ? fallback : translated
+    // If translation returns the key itself (not found), use fallback if provided, otherwise return key
+    if (translated === key) {
+      return typeof fallback === 'string' ? fallback : key
+    }
+    return translated
   }, [language, normalizeTranslateArgs])
 
   // Get translation for a specific language (useful for language selector)
   const tFor = useCallback((lang, key, fallbackOrReplacements = {}, maybeReplacements = {}) => {
     const { fallback, replacements } = normalizeTranslateArgs(fallbackOrReplacements, maybeReplacements)
     const translated = translateFn(lang, key, replacements)
-    return translated === key && typeof fallback === 'string' ? fallback : translated
+    // If translation returns the key itself (not found), use fallback if provided, otherwise return key
+    if (translated === key) {
+      return typeof fallback === 'string' ? fallback : key
+    }
+    return translated
   }, [normalizeTranslateArgs])
 
   // Get current translations object

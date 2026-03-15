@@ -330,6 +330,10 @@ export const generateKeyIdentifier = () => {
   return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
 }
 
+export const randomUUID = () => {
+  return crypto.randomUUID()
+}
+
 export const hashData = async (data) => {
   const encoded = new TextEncoder().encode(typeof data === 'string' ? data : JSON.stringify(data))
   const hashBuffer = await window.crypto.subtle.digest('SHA-256', encoded)
@@ -429,4 +433,94 @@ export const importKeyFromBackup = async (backup, password) => {
   )
 
   return arrayBufferToBase64(decrypted)
+}
+
+export const generateIdentityKeyPair = async () => {
+  const keyPair = await window.crypto.subtle.generateKey(
+    {
+      name: 'ECDSA',
+      namedCurve: 'P-256'
+    },
+    true,
+    ['sign', 'verify']
+  )
+
+  const publicKeyBuffer = await window.crypto.subtle.exportKey('spki', keyPair.publicKey)
+  const privateKeyBuffer = await window.crypto.subtle.exportKey('pkcs8', keyPair.privateKey)
+
+  return {
+    publicKey: arrayBufferToBase64(publicKeyBuffer),
+    privateKey: arrayBufferToBase64(privateKeyBuffer)
+  }
+}
+
+export const getKeyFingerprint = async (publicKeyBase64) => {
+  const publicKeyBuffer = base64ToArrayBuffer(publicKeyBase64)
+  const hashBuffer = await window.crypto.subtle.digest('SHA-256', publicKeyBuffer)
+  const hashBytes = new Uint8Array(hashBuffer)
+  
+  const fingerprint = Array.from(hashBytes.slice(0, 8))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
+  
+  const groups = fingerprint.match(/.{1,4}/g) || []
+  return groups.join(':').toUpperCase()
+}
+
+export const getShortFingerprint = async (publicKeyBase64) => {
+  const fingerprint = await getKeyFingerprint(publicKeyBase64)
+  return fingerprint.replace(/:/g, '').slice(0, 12).toUpperCase()
+}
+
+export const signData = async (data, privateKeyBase64) => {
+  const privateKeyBuffer = base64ToArrayBuffer(privateKeyBase64)
+  const privateKey = await window.crypto.subtle.importKey(
+    'pkcs8',
+    privateKeyBuffer,
+    {
+      name: 'ECDSA',
+      namedCurve: 'P-256'
+    },
+    false,
+    ['sign']
+  )
+
+  const encoded = new TextEncoder().encode(typeof data === 'string' ? data : JSON.stringify(data))
+  const signature = await window.crypto.subtle.sign(
+    {
+      name: 'ECDSA',
+      hash: 'SHA-256'
+    },
+    privateKey,
+    encoded
+  )
+
+  return arrayBufferToBase64(signature)
+}
+
+export const verifySignature = async (data, signatureBase64, publicKeyBase64) => {
+  const publicKeyBuffer = base64ToArrayBuffer(publicKeyBase64)
+  const publicKey = await window.crypto.subtle.importKey(
+    'spki',
+    publicKeyBuffer,
+    {
+      name: 'ECDSA',
+      namedCurve: 'P-256'
+    },
+    false,
+    ['verify']
+  )
+
+  const encoded = new TextEncoder().encode(typeof data === 'string' ? data : JSON.stringify(data))
+  const signature = base64ToArrayBuffer(signatureBase64)
+
+  return window.crypto.subtle.verify(
+    {
+      name: 'ECDSA',
+      hash: 'SHA-256'
+    },
+    publicKey,
+    signature,
+    encoded
+  )
 }

@@ -1,20 +1,26 @@
 import { getStoredServer } from './serverConfig'
+import { createHoneypotData, addTimestamp } from '../utils/securityUtils'
 
 function getServerConfig() {
   const server = getStoredServer()
   if (server) {
+    const proxyTokenUrl = server.apiUrl ? `${server.apiUrl}/api/auth/proxy/token` : '/api/auth/proxy/token'
+    const proxyRevokeUrl = server.apiUrl ? `${server.apiUrl}/api/auth/proxy/revoke` : '/api/auth/proxy/revoke'
     return {
       clientId: server.clientId,
-      redirectUri: server.socketUrl ? `${server.socketUrl}/callback` : null,
+      // Use explicit redirectUri if provided (for desktop), otherwise construct from socketUrl
+      redirectUri: server.redirectUri || (server.socketUrl ? `${server.socketUrl}/callback` : null),
       authUrl: server.authUrl,
-      tokenUrl: server.tokenUrl || (server.apiUrl ? `${server.apiUrl}/api/oauth/token` : '/api/auth/proxy/token'),
-      revokeUrl: server.revokeUrl || (server.apiUrl ? `${server.apiUrl}/api/oauth/revoke` : '/api/auth/proxy/revoke'),
+      // Always use backend OAuth proxy so Volt can mint/rotate local app JWTs.
+      tokenUrl: proxyTokenUrl,
+      revokeUrl: proxyRevokeUrl,
       localAuthUrl: server.apiUrl ? `${server.apiUrl}/api/auth` : '/api/auth',
       apiUrl: server.apiUrl,
       socketUrl: server.socketUrl,
       host: server.host,
       isOAuth: !!server.clientId && !!server.authUrl,
-      isLocal: !server.clientId
+      isLocal: !server.clientId,
+      isDesktop: server.isDesktop || false
     }
   }
   
@@ -22,8 +28,8 @@ function getServerConfig() {
     clientId: 'app_54f92e4d526840789998b4cca492aea1',
     redirectUri: 'https://volt.voltagechat.app/callback',
     authUrl: 'https://enclicainteractive.com/oauth/authorize',
-    tokenUrl: 'https://api.enclicainteractive.com/api/oauth/token',
-    revokeUrl: 'https://api.enclicainteractive.com/api/oauth/revoke',
+    tokenUrl: 'https://volt.voltagechat.app/api/auth/proxy/token',
+    revokeUrl: 'https://volt.voltagechat.app/api/auth/proxy/revoke',
     localAuthUrl: 'https://volt.voltagechat.app/api/auth',
     apiUrl: 'https://volt.voltagechat.app',
     socketUrl: 'https://volt.voltagechat.app',
@@ -52,6 +58,19 @@ function base64UrlEncode(arrayBuffer) {
     .replace(/=+$/, '')
 }
 
+function decodeJwtPayload(token) {
+  if (!token || typeof token !== 'string') return null
+  const parts = token.split('.')
+  if (parts.length < 2) return null
+  try {
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const json = atob(b64.padEnd(Math.ceil(b64.length / 4) * 4, '='))
+    return JSON.parse(json)
+  } catch {
+    return null
+  }
+}
+
 export const authService = {
   async startOAuthFlow() {
     const config = getServerConfig()
@@ -75,10 +94,14 @@ export const authService = {
       code_challenge_method: 'S256'
     })
 
-    window.location.href = `${config.authUrl}?${params.toString()}`
+    const authUrl = `${config.authUrl}?${params.toString()}`
+    
+    // Navigate to OAuth within the app
+    // The redirect URI (voltchat:// or tauri://) will be handled by the deep-link plugin
+    window.location.href = authUrl
   },
 
-  async register(email, password, username) {
+  async register(email, password, username, birthDate) {
     const config = getServerConfig()
     
     const response = await fetch(`${config.localAuthUrl}/register`, {
@@ -86,11 +109,13 @@ export const authService = {
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
+      body: JSON.stringify(addTimestamp({
         email,
         password,
-        username
-      })
+        username,
+        birthDate,
+        ...createHoneypotData()
+      }))
     })
 
     if (!response.ok) {
@@ -111,10 +136,11 @@ export const authService = {
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
+      body: JSON.stringify(addTimestamp({
         username: usernameOrEmail,
-        password
-      })
+        password,
+        ...createHoneypotData()
+      }))
     })
 
     if (!response.ok) {
@@ -197,6 +223,30 @@ export const authService = {
     return data
   },
 
+  async refreshAccessToken(refreshToken) {
+    const config = getServerConfig()
+    const response = await fetch(config.tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: config.clientId
+      })
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}))
+      throw new Error(error.message || 'Token refresh failed')
+    }
+
+    const data = await response.json()
+    data._serverConfig = config
+    return data
+  },
+
   async getUserInfo(tokenData) {
     if (tokenData.user) {
       return {
@@ -204,6 +254,7 @@ export const authService = {
         username: tokenData.user.username,
         displayName: tokenData.user.displayName || tokenData.user.username,
         email: tokenData.user.email,
+        birthDate: tokenData.user.birthDate || null,
         avatar: tokenData.user.avatar,
         host: tokenData.user.host
       }
@@ -217,6 +268,24 @@ export const authService = {
     })
 
     if (!response.ok) {
+      const claims = decodeJwtPayload(tokenData.access_token)
+      const rawUserId = claims?.userId || claims?.uid || claims?.sub || null
+      const id = typeof rawUserId === 'string' && rawUserId.startsWith('user:') ? rawUserId.slice(5) : rawUserId
+      const username =
+        claims?.username ||
+        claims?.preferred_username ||
+        claims?.name ||
+        (typeof claims?.email === 'string' ? claims.email.split('@')[0] : null)
+      if (id && username) {
+        return {
+          id,
+          username,
+          displayName: claims?.displayName || claims?.name || username,
+          email: claims?.email || null,
+          avatar: null,
+          host: claims?.host || null
+        }
+      }
       throw new Error('Failed to fetch user info')
     }
 
@@ -239,6 +308,54 @@ export const authService = {
     } catch (error) {
       console.error('Token revoke error:', error)
     }
+  },
+
+  async forgotPassword(email) {
+    const config = getServerConfig()
+    const response = await fetch(`${config.localAuthUrl}/forgot-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ email })
+    })
+    
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      throw new Error(data.error || 'Failed to send reset email')
+    }
+    
+    return response.json()
+  },
+
+  async verifyResetToken(token, userId) {
+    const config = getServerConfig()
+    const response = await fetch(`${config.localAuthUrl}/verify-reset-token?token=${encodeURIComponent(token)}&userId=${encodeURIComponent(userId)}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    })
+    
+    return response.json()
+  },
+
+  async resetPassword(token, userId, newPassword) {
+    const config = getServerConfig()
+    const response = await fetch(`${config.localAuthUrl}/reset-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ token, userId, newPassword })
+    })
+    
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      throw new Error(data.error || 'Failed to reset password')
+    }
+    
+    return response.json()
   },
 
   getServerConfig

@@ -178,13 +178,14 @@ function parseInline(text, key = 0, mentionProps = {}) {
         nodes.push(<Spoiler key={nodeKey}>{parseInline(content, nodeKey, mentionProps)}</Spoiler>)
         break
       case 'mention': {
-        // raw may be @username:host or @username or @everyone/@here
-        const raw = content
-        const withoutAt = raw.slice(1) // strip leading @
+        // content = match[1] which is the capture group WITHOUT the leading @
+        // e.g. for "@everyone" → content = "everyone"
+        //      for "@alice:host.com" → content = "alice:host.com"
+        const raw = content  // already without @
         // Split username and optional host
-        const colonIdx = withoutAt.indexOf(':')
-        const username = colonIdx !== -1 ? withoutAt.slice(0, colonIdx) : withoutAt
-        const host = colonIdx !== -1 ? withoutAt.slice(colonIdx + 1) : null
+        const colonIdx = raw.indexOf(':')
+        const username = colonIdx !== -1 ? raw.slice(0, colonIdx) : raw
+        const host = colonIdx !== -1 ? raw.slice(colonIdx + 1) : null
         const nameLower = username.toLowerCase()
         const isEveryone = nameLower === 'everyone'
         const isHere = nameLower === 'here'

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { X, Save, RotateCcw, Server, Shield, Globe, Database, Lock, Zap, Settings, Code, AlertTriangle, Check, Download, Upload, RefreshCw, ArrowRight, Loader, Package, Power, ScrollText } from 'lucide-react'
+import { XMarkIcon, DocumentCheckIcon, ArrowUturnDownIcon, ServerStackIcon, ShieldCheckIcon, GlobeAltIcon, CircleStackIcon, LockClosedIcon, BoltIcon, CogIcon, CodeBracketIcon, ExclamationTriangleIcon, CheckIcon, ArrowDownTrayIcon, ArrowUpTrayIcon, ArrowPathIcon, ArrowRightIcon, CubeIcon, PowerIcon, DocumentTextIcon } from '@heroicons/react/24/outline'
+import { Server, Shield, Lock, Zap, Globe, Database, Key, Settings, FileText, Code, AlertTriangle, Check, Download, Upload, RefreshCw, ArrowRight, Box, Power, FolderOpen } from 'lucide-react'
 import { apiService } from '../../services/apiService'
 import { useTranslation } from '../../hooks/useTranslation'
 import './Modal.css'
@@ -510,28 +511,28 @@ const AdminConfigModal = ({ onClose }) => {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-container admin-config-modal large" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <h2><Settings size={20} /> {t('adminConfig.title', 'Server Configuration')}</h2>
-          <button className="modal-close" onClick={onClose}><X size={20} /></button>
+          <h2><CogIcon size={20} /> {t('adminConfig.title', 'Server Configuration')}</h2>
+          <button className="modal-close" onClick={onClose}><XMarkIcon size={20} /></button>
         </div>
 
         <div className="admin-config-toolbar">
           <div className="view-toggle">
             <button className={viewMode === 'gui' ? 'active' : ''} onClick={() => setViewMode('gui')}>
-              <Zap size={14} /> {t('adminConfig.view.gui', 'GUI')}
+              <BoltIcon size={14} /> {t('adminConfig.view.gui', 'GUI')}
             </button>
             <button className={viewMode === 'json' ? 'active' : ''} onClick={() => { setViewMode('json'); loadRawConfig(); }}>
-              <Code size={14} /> {t('adminConfig.view.json', 'JSON')}
+              <CodeBracketIcon size={14} /> {t('adminConfig.view.json', 'JSON')}
             </button>
           </div>
           <div className="toolbar-actions">
             <button className="toolbar-btn" onClick={handleValidate} title={t('adminConfig.actions.validate', 'Validate')}>
-              <Check size={14} /> {t('adminConfig.actions.validate', 'Validate')}
+              <CheckIcon size={14} /> {t('adminConfig.actions.validate', 'Validate')}
             </button>
             <button className="toolbar-btn" onClick={handleImport} title={t('adminConfig.actions.import', 'Import')}>
-              <Upload size={14} /> {t('adminConfig.actions.import', 'Import')}
+              <ArrowUpTrayIcon size={14} /> {t('adminConfig.actions.import', 'Import')}
             </button>
             <button className="toolbar-btn" onClick={handleExport} title={t('adminConfig.actions.export', 'Export')}>
-              <Download size={14} /> {t('adminConfig.actions.export', 'Export')}
+              <ArrowDownTrayIcon size={14} /> {t('adminConfig.actions.export', 'Export')}
             </button>
           </div>
         </div>
@@ -541,19 +542,19 @@ const AdminConfigModal = ({ onClose }) => {
             {validation.errors?.length > 0 && (
               <div className="validation-errors">
                 {validation.errors.map((err, i) => (
-                  <div key={i} className="validation-error"><AlertTriangle size={14} /> {err}</div>
+                  <div key={i} className="validation-error"><ExclamationTriangleIcon size={14} /> {err}</div>
                 ))}
               </div>
             )}
             {validation.warnings?.length > 0 && (
               <div className="validation-warnings">
                 {validation.warnings.map((warn, i) => (
-                  <div key={i} className="validation-warning"><AlertTriangle size={14} /> {warn}</div>
+                  <div key={i} className="validation-warning"><ExclamationTriangleIcon size={14} /> {warn}</div>
                 ))}
               </div>
             )}
             {validation.valid && !validation.warnings?.length && (
-              <div className="validation-success"><Check size={14} /> {t('adminConfig.validation.valid', 'Config is valid!')}</div>
+              <div className="validation-success"><CheckIcon size={14} /> {t('adminConfig.validation.valid', 'Config is valid!')}</div>
             )}
           </div>
         )}
@@ -568,6 +569,7 @@ const AdminConfigModal = ({ onClose }) => {
               {[
                 { id: 'server', label: t('adminConfig.nav.server', 'Server'), icon: Server },
                 { id: 'auth', label: t('adminConfig.nav.auth', 'Auth'), icon: Shield },
+                { id: 'email', label: t('adminConfig.nav.email', 'Email'), icon: DocumentTextIcon },
                 { id: 'security', label: t('adminConfig.nav.security', 'Security'), icon: Lock },
                 { id: 'features', label: t('adminConfig.nav.features', 'Features'), icon: Zap },
                 { id: 'limits', label: t('adminConfig.nav.limits', 'Limits'), icon: Globe },
@@ -686,6 +688,200 @@ const AdminConfigModal = ({ onClose }) => {
                       )}
                     </div>
                   )}
+                </div>
+              )}
+
+              {activeTab === 'email' && config?.auth && (
+                <div className="config-section">
+                  <h2 className="config-section-title">{t('adminConfig.sections.email.title', 'Email Service')}</h2>
+                  <p className="config-section-desc">{t('adminConfig.sections.email.desc', 'Configure email delivery for password resets and notifications.')}</p>
+                  
+                  <div className="config-group">
+                    <h3>{t('adminConfig.sections.email.general', 'General')}</h3>
+                    <div className="config-field">
+                      <label>{t('adminConfig.fields.emailEnabled', 'Enable Email')}</label>
+                      <label className="toggle">
+                        <input 
+                          type="checkbox" 
+                          checked={config.auth.email?.enabled || false} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, enabled: e.target.checked })}
+                        />
+                        <span className="toggle-slider"></span>
+                      </label>
+                    </div>
+                    <div className="config-field">
+                      <label>{t('adminConfig.fields.emailProvider', 'Email Provider')}</label>
+                      <select 
+                        value={config.auth.email?.provider || 'smtp'} 
+                        onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, provider: e.target.value })}
+                      >
+                        <option value="smtp">{t('adminConfig.options.smtp', 'SMTP')}</option>
+                        <option value="sendgrid">{t('adminConfig.options.sendgrid', 'SendGrid')}</option>
+                        <option value="mailgun">{t('adminConfig.options.mailgun', 'Mailgun')}</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {config.auth.email?.provider === 'smtp' && (
+                    <div className="config-group">
+                      <h3>{t('adminConfig.sections.email.smtp', 'SMTP Settings')}</h3>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.smtpHost', 'SMTP Host')}</label>
+                        <input 
+                          type="text" 
+                          value={config.auth.email?.smtp?.host || ''} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, smtp: { ...config.auth.email.smtp, host: e.target.value } })} 
+                          placeholder="smtp.gmail.com"
+                        />
+                      </div>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.smtpPort', 'SMTP Port')}</label>
+                        <input 
+                          type="number" 
+                          value={config.auth.email?.smtp?.port || 587} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, smtp: { ...config.auth.email.smtp, port: parseInt(e.target.value) } })} 
+                        />
+                      </div>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.smtpSecure', 'Use SSL/TLS')}</label>
+                        <label className="toggle">
+                          <input 
+                            type="checkbox" 
+                            checked={config.auth.email?.smtp?.secure || false} 
+                            onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, smtp: { ...config.auth.email.smtp, secure: e.target.checked } })}
+                          />
+                          <span className="toggle-slider"></span>
+                        </label>
+                      </div>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.smtpUser', 'SMTP Username')}</label>
+                        <input 
+                          type="text" 
+                          value={config.auth.email?.smtp?.user || ''} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, smtp: { ...config.auth.email.smtp, user: e.target.value } })} 
+                        />
+                      </div>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.smtpPass', 'SMTP Password')}</label>
+                        <input 
+                          type="password" 
+                          value={config.auth.email?.smtp?.pass || ''} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, smtp: { ...config.auth.email.smtp, pass: e.target.value } })} 
+                        />
+                      </div>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.emailFrom', 'From Email')}</label>
+                        <input 
+                          type="email" 
+                          value={config.auth.email?.smtp?.from || ''} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, smtp: { ...config.auth.email.smtp, from: e.target.value } })} 
+                          placeholder="noreply@yourdomain.com"
+                        />
+                      </div>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.emailFromName', 'From Name')}</label>
+                        <input 
+                          type="text" 
+                          value={config.auth.email?.smtp?.fromName || 'VoltChat'} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, smtp: { ...config.auth.email.smtp, fromName: e.target.value } })} 
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {config.auth.email?.provider === 'sendgrid' && (
+                    <div className="config-group">
+                      <h3>{t('adminConfig.sections.email.sendgrid', 'SendGrid Settings')}</h3>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.sendgridApiKey', 'SendGrid API Key')}</label>
+                        <input 
+                          type="password" 
+                          value={config.auth.email?.sendgrid?.apiKey || ''} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, sendgrid: { ...config.auth.email.sendgrid, apiKey: e.target.value } })} 
+                        />
+                      </div>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.emailFrom', 'From Email')}</label>
+                        <input 
+                          type="email" 
+                          value={config.auth.email?.sendgrid?.from || ''} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, sendgrid: { ...config.auth.email.sendgrid, from: e.target.value } })} 
+                        />
+                      </div>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.emailFromName', 'From Name')}</label>
+                        <input 
+                          type="text" 
+                          value={config.auth.email?.sendgrid?.fromName || 'VoltChat'} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, sendgrid: { ...config.auth.email.sendgrid, fromName: e.target.value } })} 
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {config.auth.email?.provider === 'mailgun' && (
+                    <div className="config-group">
+                      <h3>{t('adminConfig.sections.email.mailgun', 'Mailgun Settings')}</h3>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.mailgunApiKey', 'Mailgun API Key')}</label>
+                        <input 
+                          type="password" 
+                          value={config.auth.email?.mailgun?.apiKey || ''} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, mailgun: { ...config.auth.email.mailgun, apiKey: e.target.value } })} 
+                        />
+                      </div>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.mailgunDomain', 'Mailgun Domain')}</label>
+                        <input 
+                          type="text" 
+                          value={config.auth.email?.mailgun?.domain || ''} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, mailgun: { ...config.auth.email.mailgun, domain: e.target.value } })} 
+                          placeholder="yourdomain.com"
+                        />
+                      </div>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.emailFrom', 'From Email')}</label>
+                        <input 
+                          type="email" 
+                          value={config.auth.email?.mailgun?.from || ''} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, mailgun: { ...config.auth.email.mailgun, from: e.target.value } })} 
+                        />
+                      </div>
+                      <div className="config-field">
+                        <label>{t('adminConfig.fields.emailFromName', 'From Name')}</label>
+                        <input 
+                          type="text" 
+                          value={config.auth.email?.mailgun?.fromName || 'VoltChat'} 
+                          onChange={(e) => updateConfig('auth', 'email', { ...config.auth.email, mailgun: { ...config.auth.email.mailgun, fromName: e.target.value } })} 
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="config-group">
+                    <h3>{t('adminConfig.sections.email.passwordReset', 'Password Reset Settings')}</h3>
+                    <div className="config-field">
+                      <label>{t('adminConfig.fields.passwordResetEnabled', 'Enable Password Reset')}</label>
+                      <label className="toggle">
+                        <input 
+                          type="checkbox" 
+                          checked={config.auth.passwordReset?.enabled !== false} 
+                          onChange={(e) => updateConfig('auth', 'passwordReset', { ...config.auth.passwordReset, enabled: e.target.checked })}
+                        />
+                        <span className="toggle-slider"></span>
+                      </label>
+                    </div>
+                    <div className="config-field">
+                      <label>{t('adminConfig.fields.tokenExpiry', 'Token Expiry (seconds)')}</label>
+                      <input 
+                        type="number" 
+                        value={config.auth.passwordReset?.tokenExpiry || 3600} 
+                        onChange={(e) => updateConfig('auth', 'passwordReset', { ...config.auth.passwordReset, tokenExpiry: parseInt(e.target.value) })} 
+                        min={60}
+                        max={86400}
+                      />
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -1094,7 +1290,7 @@ const AdminConfigModal = ({ onClose }) => {
                   )}
 
                   <div className="config-group">
-                    <h3><Settings size={18} /> {t('adminConfig.operations.title', 'Server Operations')}</h3>
+                    <h3><CogIcon size={18} /> {t('adminConfig.operations.title', 'Server Operations')}</h3>
                     <p className="config-description">{t('adminConfig.operations.desc', 'Restart the server, install missing drivers, and inspect logs/issues in one place.')}</p>
 
                     <div className="operations-actions">
@@ -1104,8 +1300,8 @@ const AdminConfigModal = ({ onClose }) => {
                         disabled={opsState.loading}
                       >
                         {opsState.loading
-                          ? <><Loader size={16} className="spin" /> {t('adminConfig.operations.refreshing', 'Refreshing...')}</>
-                          : <><RefreshCw size={16} /> {t('adminConfig.operations.refresh', 'Refresh Diagnostics')}</>}
+                          ? <><ArrowPathIcon size={16} className="spin" /> {t('adminConfig.operations.refreshing', 'Refreshing...')}</>
+                          : <><ArrowPathIcon size={16} /> {t('adminConfig.operations.refresh', 'Refresh Diagnostics')}</>}
                       </button>
 
                       <button
@@ -1114,8 +1310,8 @@ const AdminConfigModal = ({ onClose }) => {
                         disabled={opsState.restartPending}
                       >
                         {opsState.restartPending
-                          ? <><Loader size={16} className="spin" /> {t('adminConfig.operations.restarting', 'Restarting...')}</>
-                          : <><Power size={16} /> {t('adminConfig.operations.restart', 'Restart Voltage')}</>}
+                          ? <><ArrowPathIcon size={16} className="spin" /> {t('adminConfig.operations.restarting', 'Restarting...')}</>
+                          : <><PowerIcon size={16} /> {t('adminConfig.operations.restart', 'Restart Voltage')}</>}
                       </button>
                     </div>
 
@@ -1138,7 +1334,7 @@ const AdminConfigModal = ({ onClose }) => {
 
                     {opsState.logs?.logs?.length > 0 && (
                       <div className="ops-logs-wrap">
-                        <h4><ScrollText size={16} /> {t('adminConfig.operations.logs', 'Server Logs')}</h4>
+                        <h4><DocumentTextIcon size={16} /> {t('adminConfig.operations.logs', 'Server Logs')}</h4>
                         <div className="ops-log-list">
                           {opsState.logs.logs.map((entry) => (
                             <details key={entry.file} className="ops-log-item">
@@ -1158,7 +1354,7 @@ const AdminConfigModal = ({ onClose }) => {
                   <h2 className="config-section-title">{t('adminConfig.migration.title', 'Database Migration')}</h2>
                   <p className="config-section-desc">{t('adminConfig.migration.desc', 'Migrate your data between different database backends.')}</p>
                   <div className="config-group">
-                    <h3><Database size={18} /> {t('adminConfig.migration.tool', 'Migration Tool')}</h3>
+                    <h3><CircleStackIcon size={18} /> {t('adminConfig.migration.tool', 'Migration Tool')}</h3>
                     <p className="config-description">
                       {t('adminConfig.migration.toolDesc', 'Migrate your data between different database types. A backup will be created automatically.')}
                     </p>
@@ -1205,7 +1401,7 @@ const AdminConfigModal = ({ onClose }) => {
                         
                         {!migrationState.dependencies[migrationState.selectedType]?.available && migrationState.selectedType !== 'json' && (
                           <div className="migration-driver-warning">
-                            <AlertTriangle size={16} />
+                            <ExclamationTriangleIcon size={16} />
                             <div>
                               <strong>{t('adminConfig.migration.driverNotInstalled', 'Node.js driver not installed locally')}</strong>
                               <p>
@@ -1218,8 +1414,8 @@ const AdminConfigModal = ({ onClose }) => {
                                 disabled={opsState.installingType === migrationState.selectedType}
                               >
                                 {opsState.installingType === migrationState.selectedType
-                                  ? <><Loader size={14} className="spin" /> {t('adminConfig.operations.installingDriver', 'Installing driver...')}</>
-                                  : <><Package size={14} /> {t('adminConfig.operations.installDriverButton', 'Install Driver')}</>}
+                                  ? <><ArrowPathIcon size={14} className="spin" /> {t('adminConfig.operations.installingDriver', 'Installing driver...')}</>
+                                  : <><CubeIcon size={14} /> {t('adminConfig.operations.installDriverButton', 'Install Driver')}</>}
                               </button>
                             </div>
                           </div>
@@ -1263,9 +1459,9 @@ const AdminConfigModal = ({ onClose }) => {
                         {migrationState.testingResult && (
                           <div className={`migration-test-result ${migrationState.testingResult.success ? 'success' : 'error'}`}>
                             {migrationState.testingResult.success ? (
-                              <><Check size={16} /> {t('adminConfig.migration.connectionSuccess', 'Connection successful!')}</>
+                              <><CheckIcon size={16} /> {t('adminConfig.migration.connectionSuccess', 'Connection successful!')}</>
                             ) : (
-                              <><AlertTriangle size={16} /> {migrationState.testingResult.error || t('adminConfig.migration.connectionFailed', 'Connection failed')}</>
+                              <><ExclamationTriangleIcon size={16} /> {migrationState.testingResult.error || t('adminConfig.migration.connectionFailed', 'Connection failed')}</>
                             )}
                           </div>
                         )}
@@ -1276,7 +1472,7 @@ const AdminConfigModal = ({ onClose }) => {
                             onClick={handleTestConnection}
                             disabled={migrationState.testing}
                           >
-                            {migrationState.testing ? <><Loader size={16} className="spin" /> {t('adminConfig.migration.testing', 'Testing...')} </> : t('adminConfig.migration.testConnection', 'Test Connection')}
+                            {migrationState.testing ? <><ArrowPathIcon size={16} className="spin" /> {t('adminConfig.migration.testing', 'Testing...')} </> : t('adminConfig.migration.testConnection', 'Test Connection')}
                           </button>
                           
                           <button 
@@ -1285,9 +1481,9 @@ const AdminConfigModal = ({ onClose }) => {
                             disabled={migrationState.migrating || !migrationState.testingResult?.success}
                           >
                             {migrationState.migrating ? (
-                              <><Loader size={16} className="spin" /> {t('adminConfig.migration.migrating', 'Migrating...')} </>
+                              <><ArrowPathIcon size={16} className="spin" /> {t('adminConfig.migration.migrating', 'Migrating...')} </>
                             ) : (
-                              <><ArrowRight size={16} /> {t('adminConfig.migration.migrateDatabase', 'Migrate Database')}</>
+                              <><ArrowRightIcon size={16} /> {t('adminConfig.migration.migrateDatabase', 'Migrate Database')}</>
                             )}
                           </button>
                         </div>
@@ -1296,13 +1492,13 @@ const AdminConfigModal = ({ onClose }) => {
                           <div className={`migration-result ${migrationState.migrationResult.success ? 'success' : 'error'}`}>
                             {migrationState.migrationResult.success ? (
                               <>
-                                <Check size={16} />
+                                <CheckIcon size={16} />
                                 <div>
                                   <strong>{t('adminConfig.migration.complete', 'Migration Complete!')}</strong>
                                   <p>{t('adminConfig.migration.completeDesc', 'The configuration has been updated. Please restart the server to complete the migration.')}</p>
                                   {migrationState.migrationResult.steps?.map((step, i) => (
                                     <div key={i} className="migration-step">
-                                      {step.status === 'completed' ? <Check size={14} /> : <Loader size={14} className="spin" />}
+                                      {step.status === 'completed' ? <CheckIcon size={14} /> : <ArrowPathIcon size={14} className="spin" />}
                                       <span>{step.step}: {t(`adminConfig.migration.stepStatus.${step.status}`, step.status)}</span>
                                     </div>
                                   ))}
@@ -1310,7 +1506,7 @@ const AdminConfigModal = ({ onClose }) => {
                               </>
                             ) : (
                               <>
-                                <AlertTriangle size={16} />
+                                <ExclamationTriangleIcon size={16} />
                                 <div>
                                   <strong>{t('adminConfig.migration.failed', 'Migration Failed')}</strong>
                                   <p>{migrationState.migrationResult.error || t('adminConfig.migration.failedDesc', 'An error occurred during migration.')}</p>
@@ -1330,7 +1526,7 @@ const AdminConfigModal = ({ onClose }) => {
           <div className="admin-config-json">
             <div className="json-editor-wrapper">
               {jsonError ? (
-                <div className="json-error"><AlertTriangle size={14} /> {jsonError}</div>
+                <div className="json-error"><ExclamationTriangleIcon size={14} /> {jsonError}</div>
               ) : null}
               <div className="json-editor-container">
                 <pre
@@ -1354,10 +1550,10 @@ const AdminConfigModal = ({ onClose }) => {
 
         <div className="modal-footer">
           <button className="btn btn-danger" onClick={handleReset}>
-            <RotateCcw size={16} /> {t('adminConfig.actions.reset', 'Reset')}
+            <ArrowUturnDownIcon size={16} /> {t('adminConfig.actions.reset', 'Reset')}
           </button>
           <button className="btn btn-primary" onClick={handleSave} disabled={saving || (viewMode === 'json' && !!jsonError)}>
-            <Save size={16} /> {saving ? t('adminConfig.actions.saving', 'Saving...') : t('adminConfig.actions.saveChanges', 'Save Changes')}
+            <DocumentCheckIcon size={16} /> {saving ? t('adminConfig.actions.saving', 'Saving...') : t('adminConfig.actions.saveChanges', 'Save Changes')}
           </button>
         </div>
       </div>

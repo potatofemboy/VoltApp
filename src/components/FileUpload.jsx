@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react'
-import { Upload, X, FileText, Image, Video, Music, Loader } from 'lucide-react'
+import { ArrowUpTrayIcon, XMarkIcon, DocumentTextIcon, PhotoIcon, VideoCameraIcon, MusicalNoteIcon, ArrowPathIcon } from '@heroicons/react/24/outline'
 import { apiService } from '../services/apiService'
 import '../assets/styles/FileUpload.css'
 
@@ -58,10 +58,10 @@ const FileUpload = ({ onUpload, onCancel, maxFiles = 10, serverId = null }) => {
   }
 
   const getFileIcon = (file) => {
-    if (file.type.startsWith('image/')) return <Image size={24} />
-    if (file.type.startsWith('video/')) return <Video size={24} />
-    if (file.type.startsWith('audio/')) return <Music size={24} />
-    return <FileText size={24} />
+    if (file.type.startsWith('image/')) return <PhotoIcon size={24} />
+    if (file.type.startsWith('video/')) return <VideoCameraIcon size={24} />
+    if (file.type.startsWith('audio/')) return <MusicalNoteIcon size={24} />
+    return <DocumentTextIcon size={24} />
   }
 
   const getFilePreview = (file) => {
@@ -111,7 +111,7 @@ const FileUpload = ({ onUpload, onCancel, maxFiles = 10, serverId = null }) => {
         onDrop={handleDrop}
         onClick={() => inputRef.current?.click()}
       >
-        <Upload size={32} />
+        <ArrowUpTrayIcon size={32} />
         <p>Drag and drop files here or click to browse</p>
         <span className="drop-hint">Max 25MB per file, up to {maxFiles} files</span>
         <input
@@ -141,7 +141,7 @@ const FileUpload = ({ onUpload, onCancel, maxFiles = 10, serverId = null }) => {
                   <span className="file-size">{formatSize(file.size)}</span>
                 </div>
                 <button className="file-remove" onClick={() => removeFile(index)}>
-                  <X size={16} />
+                  <XMarkIcon size={16} />
                 </button>
               </div>
             )
@@ -169,7 +169,7 @@ const FileUpload = ({ onUpload, onCancel, maxFiles = 10, serverId = null }) => {
         >
           {uploading ? (
             <>
-              <Loader size={16} className="spin" />
+              <ArrowPathIcon size={16} className="spin" />
               Uploading...
             </>
           ) : (

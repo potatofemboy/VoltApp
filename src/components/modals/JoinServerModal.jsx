@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { X, Link, ArrowRight } from 'lucide-react'
+import { XMarkIcon, LinkIcon, ArrowRightIcon } from '@heroicons/react/24/outline'
 import { apiService } from '../../services/apiService'
 import { soundService } from '../../services/soundService'
 import { useTranslation } from '../../hooks/useTranslation'
@@ -50,14 +50,14 @@ const JoinServerModal = ({ onClose, onSuccess }) => {
         <div className="modal-header">
           <h2>{t('modals.joinServer')}</h2>
           <button className="modal-close" onClick={onClose}>
-            <X size={24} />
+            <XMarkIcon size={24} />
           </button>
         </div>
 
         <form onSubmit={handleJoin}>
           <div className="modal-body">
             <div className="join-server-icon">
-              <Link size={48} />
+              <LinkIcon size={48} />
             </div>
             
             <p className="join-description">
@@ -91,7 +91,7 @@ const JoinServerModal = ({ onClose, onSuccess }) => {
               className="btn btn-primary"
               disabled={loading || !inviteCode.trim()}
             >
-              {loading ? t('common.loading') : <>{t('modals.joinServerBtn')} <ArrowRight size={16} /></>}
+              {loading ? t('common.loading') : <>{t('modals.joinServerBtn')} <ArrowRightIcon size={16} /></>}
             </button>
           </div>
         </form>

@@ -200,7 +200,7 @@
   border: 1px solid rgba(31, 182, 255, 0.25);
   border-radius: 20px;
   font-size: 12px;
-  color: var(--volt-primary, #1fb6ff);
+  color: var(--volt-primary);
   margin-bottom: 12px;
 }
 
@@ -215,7 +215,7 @@
   border-radius: 8px;
   margin-bottom: 16px;
   font-size: 13px;
-  color: var(--volt-primary, #1fb6ff);
+  color: var(--volt-primary);
 }
 
 .server-description {
@@ -229,9 +229,9 @@
   width: 100%;
   padding: 12px 14px;
   border-radius: 8px;
-  border: 1px solid var(--volt-border, #2a2f3e);
-  background: var(--volt-bg-tertiary, #1a1f2e);
-  color: var(--volt-text-primary, #e0e0e0);
+  border: 1px solid var(--volt-border);
+  background: var(--volt-bg-tertiary);
+  color: var(--volt-text-primary);
   font-size: 15px;
   text-align: center;
   outline: none;
@@ -239,9 +239,9 @@
 }
 
 .invite-host-input:focus {
-  border-color: var(--volt-primary, #1fb6ff);
+  border-color: var(--volt-primary);
 }
 
 .invite-host-input::placeholder {
-  color: var(--volt-text-muted, #8a8f9e);
+  color: var(--volt-text-muted);
 }

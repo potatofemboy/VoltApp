@@ -1,26 +1,23 @@
 import React from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { Loader2 } from 'lucide-react'
+import { useSocket } from '../contexts/SocketContext'
+import { LoadingScreen } from './LoadingScreen'
 
 const ProtectedRoute = ({ children }) => {
   const { isAuthenticated, loading } = useAuth()
+  const { connected } = useSocket()
 
   if (loading) {
-    return (
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: '100vh'
-      }}>
-        <Loader2 size={48} className="pulse" />
-      </div>
-    )
+    return <LoadingScreen message="Loading your session..." />
   }
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />
+  }
+
+  if (!connected) {
+    return <LoadingScreen message="Reconnecting..." />
   }
 
   return children

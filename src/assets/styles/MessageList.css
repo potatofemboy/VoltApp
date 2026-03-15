@@ -20,6 +20,29 @@
   padding: 40px 20px;
 }
 
+.no-messages.loading-state {
+  height: 200px;
+}
+
+.no-messages.loading-state .loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--volt-border);
+  border-top: 3px solid var(--volt-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 16px;
+}
+
+.no-messages.loading-state h3 {
+  color: var(--volt-text-primary);
+  margin-bottom: 8px;
+}
+
+.no-messages.loading-state p {
+  color: var(--volt-text-secondary);
+}
+
 .no-messages-icon {
   width: 64px;
   height: 64px;
@@ -38,6 +61,52 @@
   font-size: 14px;
 }
 
+.no-messages-diagnostic-code {
+  margin-top: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--volt-bg-tertiary);
+  color: var(--volt-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.no-messages-diagnostics {
+  width: min(560px, 100%);
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--volt-border);
+  border-radius: 12px;
+  background: var(--volt-bg-secondary);
+  text-align: left;
+}
+
+.no-messages-diagnostics h4 {
+  margin: 0 0 8px;
+  color: var(--volt-text-primary);
+  font-size: 13px;
+}
+
+.no-messages-diagnostics ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--volt-text-secondary);
+}
+
+.no-messages-diagnostics li + li {
+  margin-top: 6px;
+}
+
+.no-messages-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 12px;
+  margin-top: 14px;
+  color: var(--volt-text-muted);
+  font-size: 12px;
+}
+
 .message {
   margin-bottom: 16px;
   animation: fadeIn 0.2s ease;
@@ -50,12 +119,21 @@
   background: var(--volt-hover);
 }
 
+.message.mentioned {
+  background: rgba(99, 102, 241, 0.12);
+  border-left: 3px solid var(--volt-primary);
+}
+
+.message.mentioned:hover {
+  background: rgba(99, 102, 241, 0.18);
+}
+
 .message.grouped {
   margin-top: -12px;
 }
 
 .message.grouped .message-content {
-  margin-left: 56px;
+  margin-left: 0;
 }
 
 .message-reply-ref {
@@ -66,6 +144,40 @@
   color: var(--volt-text-muted);
   margin-bottom: 4px;
   margin-left: 56px;
+  padding: 4px 8px;
+  background: var(--volt-bg-tertiary);
+  border-radius: 4px;
+  border-left: 2px solid var(--volt-primary);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.message-reply-ref:hover {
+  background: var(--volt-bg-quaternary);
+}
+
+.message-reply-ref.deleted {
+  opacity: 0.6;
+  cursor: default;
+  font-style: italic;
+}
+
+.message-reply-ref .reply-deleted {
+  color: var(--volt-text-muted);
+}
+
+.message-reply-ref .reply-author {
+  color: var(--volt-primary);
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.message-reply-ref .reply-content {
+  color: var(--volt-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
 }
 
 .message-header {
@@ -116,8 +228,50 @@
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 0 8px rgba(0, 0, 0, 0.3);
 }
 
+.message.grouped .message-content,
+.message.grouped .message-reply-ref {
+  padding-left: 0;
+  margin-left: 56px;
+}
+
 .message.own .message-content {
   color: var(--volt-text-primary);
+}
+
+.message.sending .message-content {
+  color: #9ca3af;
+}
+
+.message.failed .message-content {
+  color: var(--volt-danger);
+}
+
+.message-deleted-copy {
+  color: var(--volt-text-muted);
+  font-style: italic;
+}
+
+.message-send-state,
+.message-send-state-inline {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.message-send-state.sending,
+.message-send-state-inline.sending {
+  color: #9ca3af;
+  animation: messageSendPulse 1s ease-in-out infinite;
+}
+
+.message-send-state.failed,
+.message-send-state-inline.failed {
+  color: var(--volt-danger);
+}
+
+@keyframes messageSendPulse {
+  0%, 100% { opacity: 0.65; }
+  50% { opacity: 1; }
 }
 
 .edited-tag {
@@ -134,7 +288,7 @@
   font-size: 10px;
   font-weight: 700;
   border-radius: 3px;
-  background: var(--volt-primary, #1fb6ff);
+  background: var(--volt-primary);
   color: #fff;
   margin-left: 4px;
   line-height: 16px;
@@ -151,7 +305,23 @@
   font-weight: 700;
   border-radius: 3px;
   background: rgba(52, 211, 153, 0.2);
-  color: #34d399;
+  color: var(--volt-success);
+  margin-left: 4px;
+  line-height: 16px;
+  vertical-align: middle;
+  letter-spacing: 0.3px;
+}
+
+.unencrypted-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  height: 16px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.18);
+  color: #cbd5e1;
   margin-left: 4px;
   line-height: 16px;
   vertical-align: middle;
@@ -328,6 +498,13 @@
   font-size: 16px;
 }
 
+.reaction-custom-emoji {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  vertical-align: middle;
+}
+
 .reaction-count {
   font-size: 12px;
   color: var(--volt-text-secondary);
@@ -376,20 +553,8 @@
   background: rgba(239, 68, 68, 0.1);
 }
 
-.message-emoji-picker {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: 8px;
-  z-index: 100;
-}
-
-.message-emoji-picker .emoji-picker {
-  position: relative;
-  bottom: auto;
-  top: auto;
-  right: auto;
-}
+/* Note: message-emoji-picker is now rendered via portal */
+/* The .reaction-emoji-picker-portal class is in ReactionEmojiPicker component */
 
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(10px); }
@@ -408,7 +573,7 @@
 /* @everyone */
 .mention-highlight.mention-everyone {
   background: rgba(250, 204, 21, 0.18);
-  color: #fbbf24;
+  color: var(--volt-warning);
   border: 1px solid rgba(250, 204, 21, 0.3);
 }
 .mention-highlight.mention-everyone:hover {
@@ -418,7 +583,7 @@
 /* @here */
 .mention-highlight.mention-here {
   background: rgba(96, 165, 250, 0.18);
-  color: #60a5fa;
+  color: var(--volt-primary-light);
   border: 1px solid rgba(96, 165, 250, 0.3);
 }
 .mention-highlight.mention-here:hover {
@@ -437,7 +602,7 @@
 
 /* @other-user — shown but not highlighted as personal */
 .mention-other {
-  color: #818cf8;
+  color: var(--volt-primary-light);
   font-weight: 600;
   cursor: pointer;
   padding: 0 1px;
@@ -493,8 +658,9 @@
   font-size: 14px;
   font-weight: 600;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  z-index: 100;
+  z-index: 80;
   transition: transform 0.2s, opacity 0.2s;
+  pointer-events: auto;
 }
 
 .return-to-latest:hover {
@@ -615,7 +781,7 @@ a.embed-title:hover {
 }
 
 .embed-description {
-  color: var(--volt-text-secondary, var(--volt-text-primary));
+  color: var(--volt-text-secondary);
   font-size: 0.85rem;
   white-space: pre-wrap;
   word-break: break-word;
@@ -647,7 +813,7 @@ a.embed-title:hover {
 
 .embed-field-value {
   font-size: 0.82rem;
-  color: var(--volt-text-secondary, var(--volt-text-primary));
+  color: var(--volt-text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -682,4 +848,91 @@ a.embed-title:hover {
 
 .embed-footer-sep {
   opacity: 0.5;
+}
+
+/* Selection Mode Styles */
+.selection-mode-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+}
+
+.selection-mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--volt-bg-secondary);
+  border: 1px solid var(--volt-border);
+  border-radius: 6px;
+  color: var(--volt-text-secondary);
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s ease;
+}
+
+.selection-mode-btn:hover {
+  background: var(--volt-bg-hover);
+  color: var(--volt-text-primary);
+}
+
+.selection-toolbar {
+  position: sticky;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  background: var(--volt-bg-primary);
+  border-bottom: 1px solid var(--volt-border);
+  z-index: 20;
+}
+
+.selection-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.selection-count {
+  font-weight: 600;
+  color: var(--volt-text-primary);
+}
+
+.selection-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.selection-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: var(--volt-bg-secondary);
+  border: 1px solid var(--volt-border);
+  border-radius: 6px;
+  color: var(--volt-text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.selection-btn:hover {
+  background: var(--volt-bg-hover);
+  color: var(--volt-text-primary);
+}
+
+.selection-btn.danger {
+  color: #ef4444;
+}
+
+.selection-btn.danger:hover {
+  background: #fef2f2;
+  border-color: #fecaca;
 }

@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react'
-import { Hash, Volume2, Settings, ChevronDown, Plus, UserPlus, Lock, Mic, MicOff, Headphones, Edit2, Trash2, Copy, Folder, FolderOpen, GripVertical } from 'lucide-react'
+import { ChevronDown, ChevronRight, Settings2, Plus, Pencil, Trash, Cog, Folder, UserPlus, Lock, Mic, Volume2, Hash, Megaphone, MessageSquare, Image, Video } from 'lucide-react'
+import { ClipboardDocumentIcon, LockClosedIcon, MicrophoneIcon } from '@heroicons/react/24/outline'
 import { useAuth } from '../contexts/AuthContext'
 import { useSocket } from '../contexts/SocketContext'
+import { useE2e } from '../contexts/E2eContext'
 import { soundService } from '../services/soundService'
 import { apiService } from '../services/apiService'
 import { useAppStore } from '../store/useAppStore'
@@ -38,29 +40,32 @@ const ChannelSidebar = ({
   isMuted = false, 
   isDeafened = false, 
   onToggleMute, 
-  onToggleDeafen 
+  onToggleDeafen,
+  unreadChannelIds = []
 }) => {
   const { user } = useAuth()
   const { socket, connected, serverUpdates } = useSocket()
-  const { setCategories: setStoreCategories } = useAppStore()
+  const { isEncryptionEnabled, getServerEncryptionStatus } = useE2e()
+  const { setCategories: setStoreCategories, selfPresence, setSelfPresence } = useAppStore()
   const { t } = useTranslation()
+  
+  // Check if server encryption is enabled
+  const encryptionEnabled = server?.id ? isEncryptionEnabled(server.id) : false
+  
+  // Check encryption status when server changes
+  useEffect(() => {
+    if (server?.id) {
+      console.log('[ChannelSidebar] Checking encryption status for server:', server.id)
+      getServerEncryptionStatus(server.id)
+    }
+  }, [server?.id, getServerEncryptionStatus])
   
   // Combine categories from props with real-time updates
   const categories = React.useMemo(() => {
     const baseCategories = categoriesProp || []
     const serverUpdate = serverUpdates[server?.id]
-    if (serverUpdate?.categories) {
-      // Merge base categories with real-time updates
-      const merged = [...baseCategories]
-      serverUpdate.categories.forEach(cat => {
-        const existingIndex = merged.findIndex(c => c.id === cat.id)
-        if (existingIndex >= 0) {
-          merged[existingIndex] = cat
-        } else {
-          merged.push(cat)
-        }
-      })
-      return merged
+    if (Array.isArray(serverUpdate?.categories)) {
+      return [...serverUpdate.categories].sort((a, b) => (a.position || 0) - (b.position || 0))
     }
     return baseCategories
   }, [categoriesProp, serverUpdates, server?.id])
@@ -71,7 +76,6 @@ const ChannelSidebar = ({
   const [showCategorySettings, setShowCategorySettings] = useState(null)
   const [expandedCategories, setExpandedCategories] = useState({})
   const [showServerMenu, setShowServerMenu] = useState(false)
-  const [userStatus, setUserStatus] = useState({ status: 'online', customStatus: '' })
   const [contextMenu, setContextMenu] = useState(null)
   const [sidebarParticipants, setSidebarParticipants] = useState({})
   const [draggedChannel, setDraggedChannel] = useState(null)
@@ -181,6 +185,14 @@ const ChannelSidebar = ({
     return () => clearTimeout(timer)
   }, [leavingVoiceChannelId, socket, connected])
 
+  useEffect(() => {
+    if (!user) return
+    setSelfPresence({
+      status: user.status || 'online',
+      customStatus: user.customStatus || ''
+    })
+  }, [setSelfPresence, user])
+
   const getMergedParticipants = (channelId) => {
     if (activeVoiceChannel?.id === channelId && voiceParticipantsByChannel[channelId]) {
       return voiceParticipantsByChannel[channelId]
@@ -247,6 +259,7 @@ const ChannelSidebar = ({
 
   const handleChannelDoubleClick = (channel, isVoice) => {
     if (isVoice) {
+      soundService.prime()
       onChannelChange(channel.id, true)
       onVoicePreview?.(channel, true)
     }
@@ -254,6 +267,7 @@ const ChannelSidebar = ({
 
   const handleJoinVoice = (channel, e) => {
     e?.stopPropagation()
+    soundService.prime()
     onChannelChange(channel.id, true)
     onVoicePreview?.(channel, true)
   }
@@ -264,13 +278,13 @@ const ChannelSidebar = ({
     
     const items = [
       {
-        icon: <Edit2 size={16} />,
+        icon: <Pencil size={16} />,
         label: 'Edit Channel',
         onClick: () => setShowChannelSettings(channel),
         disabled: !isAdmin
       },
       {
-        icon: <Copy size={16} />,
+        icon: <ClipboardDocumentIcon size={16} />,
         label: 'Copy Channel ID',
         onClick: async () => {
           try {
@@ -289,7 +303,7 @@ const ChannelSidebar = ({
       },
       { type: 'separator' },
       {
-        icon: <Trash2 size={16} />,
+        icon: <Trash size={16} />,
         label: 'Delete Channel',
         onClick: () => {
           if (confirm(`Delete #${channel.name}?`)) {
@@ -320,7 +334,7 @@ const ChannelSidebar = ({
     
     const items = [
       {
-        icon: <Edit2 size={16} />,
+        icon: <Pencil size={16} />,
         label: 'Edit Category',
         onClick: () => setShowCategorySettings(category),
         disabled: !isAdmin || isUncategorized
@@ -333,7 +347,7 @@ const ChannelSidebar = ({
       },
       { type: 'separator' },
       {
-        icon: <Trash2 size={16} />,
+        icon: <Trash size={16} />,
         label: 'Delete Category',
         onClick: () => {
           if (confirm(`Delete category "${category.name}"? Channels will be moved to "No Category".`)) {
@@ -386,13 +400,13 @@ const ChannelSidebar = ({
     })
     
     // Sort categories by position
-    const sortedCategoryIds = categories
+    const sortedCategoryIds = [...categories]
       .sort((a, b) => (a.position || 0) - (b.position || 0))
       .map(c => c.id)
     
-    // Only add uncategorized if there are channels in it
+    // Only add uncategorized if there are channels in it and no category with that id exists
     const uncategorizedChannels = grouped['uncategorized']?.channels || []
-    if (uncategorizedChannels.length > 0) {
+    if (uncategorizedChannels.length > 0 && !sortedCategoryIds.includes('uncategorized')) {
       sortedCategoryIds.push('uncategorized')
     }
     
@@ -401,11 +415,31 @@ const ChannelSidebar = ({
 
   const { grouped: groupedChannels, order: categoryOrder } = channelsByCategory()
 
+  const getChannelIcon = (channel) => {
+    const type = channel.type
+    switch (type) {
+      case 'voice':
+        return <Volume2 size={20} />
+      case 'video':
+        return <Video size={20} />
+      case 'announcement':
+        return <Megaphone size={20} />
+      case 'forum':
+        return <MessageSquare size={20} />
+      case 'media':
+        return <Image size={20} />
+      default:
+        return <Hash size={20} />
+    }
+  }
+
   // Render channel item
   const renderChannel = (channel) => {
     const isVoice = channel.type === 'voice'
+    const isVideo = channel.type === 'video'
+    const hasUnread = unreadChannelIds.includes(channel.id)
     
-    if (isVoice) {
+    if (isVoice || isVideo) {
       const participants = getMergedParticipants(channel.id)
       const isConnected = activeVoiceChannel?.id === channel.id
       const isSelected = selectedVoiceChannelId === channel.id
@@ -413,7 +447,7 @@ const ChannelSidebar = ({
       return (
         <div key={channel.id} className="voice-channel-group">
           <button
-            className={`channel-item voice ${isConnected ? 'connected' : ''} ${isSelected ? 'selected' : ''}`}
+            className={`channel-item voice ${isConnected ? 'connected' : ''} ${isSelected ? 'selected' : ''} ${hasUnread ? 'unread' : ''}`}
             onClick={() => handleChannelClick(channel, true)}
             onDoubleClick={() => handleChannelDoubleClick(channel, true)}
             onContextMenu={(e) => handleChannelContextMenu(e, channel)}
@@ -424,8 +458,9 @@ const ChannelSidebar = ({
               setDragOverCategory(null)
             }}
           >
-            <Volume2 size={20} />
+            {getChannelIcon(channel)}
             <span className="channel-name">{channel.name}</span>
+            {encryptionEnabled && <LockClosedIcon size={12} className="channel-e2ee-lock" title={t('serverSettings.encryptionEnabled', 'Encrypted')} />}
             {isConnected && (
               <span className="voice-connected-badge" title={t('chat.voiceConnected', 'Voice Connected')}>{t('chat.connected', 'Connected')}</span>
             )}
@@ -439,28 +474,19 @@ const ChannelSidebar = ({
                 tabIndex={0}
                 onClick={(e) => { e.stopPropagation(); setShowChannelSettings(channel) }}
               >
-                <Settings size={14} />
+<Cog size={14} />
               </span>
             )}
           </button>
-          {!isConnected && (
-            <button 
-              className="voice-join-btn"
-              onClick={(e) => handleJoinVoice(channel, e)}
-              title={t('chat.joinChannel', 'Join Channel')}
-            >
-              {t('chat.joinChannel', 'Join')}
-            </button>
-          )}
           {participants.length > 0 && (
             <div className={`voice-participant-list${selectedVoiceChannelId === channel.id ? ' expanded' : ''}`}>
               {participants.map(p => (
                 <div key={p.id} className="voice-participant-row">
                   <div className="voice-participant-avatar-wrap">
-                    <Avatar src={p.avatar} fallback={p.username} size={20} />
+                    <Avatar src={p.avatar} fallback={p.username} size={20} userId={p.id} />
                     {(p.muted) && (
                       <span className="voice-participant-muted-dot" title={t('chat.muted', 'Muted')}>
-                        <MicOff size={8} />
+                        <MicrophoneIcon size={8} />
                       </span>
                     )}
                   </div>
@@ -479,7 +505,7 @@ const ChannelSidebar = ({
     return (
       <button
         key={channel.id}
-        className={`channel-item ${currentChannelId === channel.id ? 'active' : ''}`}
+        className={`channel-item ${currentChannelId === channel.id ? 'active' : ''} ${hasUnread ? 'unread' : ''}`}
         onClick={() => handleChannelClick(channel, false)}
         onContextMenu={(e) => handleChannelContextMenu(e, channel)}
         draggable={isAdmin}
@@ -489,9 +515,10 @@ const ChannelSidebar = ({
           setDragOverCategory(null)
         }}
       >
-        <Hash size={20} />
+        {getChannelIcon(channel)}
         <span className="channel-name">{channel.name}</span>
-        {channel.private && <Lock size={14} className="channel-lock" />}
+        {channel.private && <LockClosedIcon size={14} className="channel-lock" />}
+        {encryptionEnabled && <LockClosedIcon size={12} className="channel-e2ee-lock" title={t('serverSettings.encryptionEnabled', 'Encrypted')} />}
         {isAdmin && (
           <span 
             className="channel-settings-btn"
@@ -499,7 +526,7 @@ const ChannelSidebar = ({
             tabIndex={0}
             onClick={(e) => { e.stopPropagation(); setShowChannelSettings(channel) }}
           >
-            <Settings size={14} />
+            <Cog size={14} />
           </span>
         )}
       </button>
@@ -551,7 +578,7 @@ const ChannelSidebar = ({
         {showServerMenu && (
           <div className="server-dropdown" onClick={e => e.stopPropagation()}>
             <button onClick={() => { onOpenServerSettings?.(); setShowServerMenu(false) }}>
-              <Settings size={16} /> {t('serverSettings.serverSettings', 'Server Settings')}
+              <Cog size={16} /> {t('serverSettings.serverSettings', 'Server Settings')}
             </button>
             <button onClick={() => { setShowCreateModal(true); setShowServerMenu(false) }}>
               <Plus size={16} /> {t('channel.createChannel', 'Create Channel')}
@@ -589,7 +616,7 @@ const ChannelSidebar = ({
                     role="button"
                     tabIndex={0}
                   >
-                    <ChevronDown 
+<ChevronDown
                       size={12} 
                       style={{ transform: isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
                     />
@@ -603,7 +630,7 @@ const ChannelSidebar = ({
                         }}
                         title={t('channel.createChannel', 'Create Channel')}
                       >
-                        <Plus size={16} />
+<Plus size={16} />
                       </button>
                     )}
                   </div>
@@ -691,50 +718,52 @@ const ChannelSidebar = ({
         )}
 
         <div className="user-panel">
-          <div className="user-info">
+          <div className="user-panel-main">
             <div className="user-avatar-wrapper">
-              <Avatar 
+              <Avatar
                 src={user?.avatar}
                 alt={user?.username}
                 fallback={user?.username || user?.email}
-                size={32}
+                size={36}
                 className="user-avatar"
               />
-              <span 
+              <span
                 className="user-status-dot"
-                style={{ 
-                  backgroundColor: userStatus.status === 'online' ? '#22c55e' : 
-                    userStatus.status === 'idle' ? '#f59e0b' : 
-                    userStatus.status === 'dnd' ? '#ef4444' : '#6b7280' 
+                style={{
+                  backgroundColor: selfPresence.status === 'online' ? 'var(--volt-success)' :
+                    selfPresence.status === 'idle' ? 'var(--volt-warning)' :
+                    selfPresence.status === 'dnd' ? 'var(--volt-danger)' : '#6b7280'
                 }}
               />
             </div>
             <div className="user-details">
               <div className="user-name">{user?.username || user?.email || t('common.user', 'User')}</div>
-              <StatusSelector 
-                currentStatus={userStatus.status}
-                customStatus={userStatus.customStatus}
-                onStatusChange={setUserStatus}
-              />
+              <div className="user-details-row">
+                <StatusSelector
+                  currentStatus={selfPresence.status}
+                  customStatus={selfPresence.customStatus}
+                  onStatusChange={setSelfPresence}
+                />
+              </div>
             </div>
           </div>
           <div className="user-controls">
-            <button 
-              className={`icon-btn ${isMuted ? 'active-danger' : ''}`} 
+            <button
+              className={`control-btn ${isMuted ? 'active-danger' : ''}`}
               title={isMuted ? t('chat.unmute', 'Unmute') : t('chat.mute', 'Mute')}
               onClick={handleToggleMute}
             >
-              {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
+              {isMuted ? <MicrophoneIcon size={16} /> : <MicrophoneIcon size={16} />}
             </button>
-            <button 
-              className={`icon-btn ${isDeafened ? 'active-danger' : ''}`} 
+            <button
+              className={`control-btn ${isDeafened ? 'active-danger' : ''}`}
               title={isDeafened ? t('chat.undeafen', 'Undeafen') : t('chat.deafen', 'Deafen')}
               onClick={handleToggleDeafen}
             >
-              <Headphones size={18} />
+              <Volume2 size={16} />
             </button>
-            <button className="icon-btn" title={t('misc.userSettings', 'User Settings')} onClick={() => onOpenSettings?.()}>
-              <Settings size={18} />
+            <button className="control-btn" title={t('misc.userSettings', 'User Settings')} onClick={() => onOpenSettings?.()}>
+              <Cog size={16} />
             </button>
           </div>
         </div>

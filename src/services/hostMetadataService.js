@@ -91,24 +91,35 @@ async function fetchFederationInfo(baseUrl) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 6000)
   try {
-    const res = await fetch(`${baseUrl}/api/federation/info`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      signal: controller.signal
-    })
+    let json = null
+    const fetchDocument = async (url) => {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal
+      })
+      if (!res.ok) return null
+      return res.json()
+    }
+
+    json = await fetchDocument(`${baseUrl}/.well-known/voltchat`)
+    if (!json) json = await fetchDocument(`${baseUrl}/api/federation/discover`)
+    if (!json) json = await fetchDocument(`${baseUrl}/api/federation/info`)
+
     clearTimeout(timeout)
-    if (!res.ok) return null
-    const json = await res.json()
+    if (!json) return null
+    const endpoints = json.endpoints || {}
     return {
       host: json.host,
       name: json.name || null,
-      apiUrl: json.apiUrl || baseUrl,
-      imageServerUrl: json.imageServerUrl || json.apiUrl || baseUrl,
+      apiUrl: endpoints.api || json.apiUrl || baseUrl,
+      imageServerUrl: endpoints.images || json.imageServerUrl || endpoints.api || json.apiUrl || baseUrl,
       cdnEnabled: json.cdnEnabled || false,
       cdnUrl: json.cdnUrl || null,
-      federationEnabled: json.federationEnabled || false,
-      features: json.features || {},
+      federationEnabled: json.federationEnabled || json.capabilities?.federation || false,
+      features: json.features || json.federation?.features || {},
       version: json.version || null,
+      mode: json.mode || null,
       local: false
     }
   } catch {

@@ -1,18 +1,47 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useState, useCallback, useLayoutEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { formatDistance } from 'date-fns'
-import { Edit2, Trash2, Reply, Smile, MoreHorizontal, X, Check, Copy, Link, Share, Pin, ArrowDown, Loader2, MessageSquare } from 'lucide-react'
+import { PencilIcon, TrashIcon, ArrowUturnLeftIcon, FaceSmileIcon, EllipsisHorizontalIcon, XMarkIcon, CheckIcon, ClipboardDocumentIcon, LinkIcon, ShareIcon, MapPinIcon, ArrowDownIcon, ArrowPathIcon, ChatBubbleLeftRightIcon, FlagIcon, Square2StackIcon, XCircleIcon } from '@heroicons/react/24/outline'
 import { useSocket } from '../contexts/SocketContext'
 import { useTranslation } from '../hooks/useTranslation'
 import Avatar from './Avatar'
-import EmojiPicker from './EmojiPicker'
 import MarkdownMessage from './MarkdownMessage'
 import FileAttachment from './FileAttachment'
 import ContextMenu from './ContextMenu'
+import ReactionEmojiPicker from './ReactionEmojiPicker'
+import BotUIMessage from './BotUIMessage'
+import { deserializeReactionEmoji, serializeReactionEmoji } from '../utils/reactionEmoji'
 import '../assets/styles/MessageList.css'
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥']
+const ATTACHMENT_PLACEHOLDER_TYPES = new Set(['image', 'video', 'audio', 'file', 'attachment'])
 
-const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, onPinMessage, onUnpinMessage, highlightMessageId, onSaveScrollPosition, scrollPosition, onShowProfile, members, serverEmojis }) => {
+const isAttachmentOnlyPlaceholder = (content = '') => {
+  const trimmed = String(content || '').trim()
+  if (!trimmed || !trimmed.startsWith('[') || !trimmed.endsWith(']')) return false
+
+  const chunks = trimmed
+    .split(']')
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+
+  if (chunks.length === 0) return false
+
+  return chunks.every((chunk) => {
+    if (!chunk.startsWith('[')) return false
+    const inner = chunk.slice(1).trim().replaceAll('\t', ' ')
+    const normalized = inner.split(' ').filter(Boolean)
+    if (normalized.length < 1 || normalized.length > 2) return false
+    if (!ATTACHMENT_PLACEHOLDER_TYPES.has(normalized[0].toLowerCase())) return false
+    if (normalized.length === 1) return true
+    const suffix = normalized[1]
+    return suffix.startsWith('#') && suffix.length > 1 && suffix.slice(1).split('').every((char) => char >= '0' && char <= '9')
+  })
+}
+
+const asArray = (value) => (Array.isArray(value) ? value : [])
+
+const MessageList = ({ messages, emptyState = null, currentUserId, channelId, onReply, onLoadMore, onPinMessage, onUnpinMessage, onReportMessage, highlightMessageId, onSaveScrollPosition, scrollPosition, onShowProfile, members, serverEmojis, replyingTo, onCancelReply, serverId, isAdmin, server, isLoading }) => {
   const { t } = useTranslation()
   const { socket } = useSocket()
   const messagesEndRef = useRef(null)
@@ -22,6 +51,7 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
   const [editingMessage, setEditingMessage] = useState(null)
   const [editContent, setEditContent] = useState('')
   const [showEmojiPicker, setShowEmojiPicker] = useState(null)
+  const [emojiPickerAnchor, setEmojiPickerAnchor] = useState(null)
   const [hoveredMessage, setHoveredMessage] = useState(null)
   const [contextMenu, setContextMenu] = useState(null)
   const [isNearTop, setIsNearTop] = useState(false)
@@ -29,30 +59,78 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
   const [hasMoreMessages, setHasMoreMessages] = useState(true)
   const [isAtBottom, setIsAtBottom] = useState(true)
   const [initialLoad, setInitialLoad] = useState(true)
+  const [selectedMessages, setSelectedMessages] = useState(new Set())
+  const [isSelectionMode, setIsSelectionMode] = useState(false)
   const prevMessageCountRef = useRef(0)
   const scrollPositionRef = useRef(0)
   const isAtBottomRef = useRef(true)
+  const restoredChannelRef = useRef(null)
+  const safeMessages = asArray(messages)
 
-  useEffect(() => {
-    const handleClickOutside = (e) => {
-      if (showEmojiPicker && !e.target.closest('.message-emoji-picker') && !e.target.closest('.reaction-btn')) {
-        setShowEmojiPicker(null)
-      }
+  // Check if user can manage messages (admin or has permission)
+  const isServerOwner = server?.ownerId === currentUserId
+  const canManageMessages = isAdmin || isServerOwner
+
+  // Toggle selection mode
+  const toggleSelectionMode = () => {
+    setIsSelectionMode(prev => !prev)
+    if (isSelectionMode) {
+      setSelectedMessages(new Set())
     }
-    document.addEventListener('click', handleClickOutside)
-    return () => document.removeEventListener('click', handleClickOutside)
-  }, [showEmojiPicker])
+  }
+
+  // Toggle message selection
+  const toggleMessageSelection = (messageId) => {
+    setSelectedMessages(prev => {
+      const next = new Set(prev)
+      if (next.has(messageId)) {
+        next.delete(messageId)
+      } else {
+        next.add(messageId)
+      }
+      return next
+    })
+  }
+
+  // Select all visible messages
+  const selectAllMessages = () => {
+    const allIds = safeMessages.filter(m => !m.deleted).map(m => m.id)
+    setSelectedMessages(new Set(allIds))
+  }
+
+  // Clear selection
+  const clearSelection = () => {
+    setSelectedMessages(new Set())
+    setIsSelectionMode(false)
+  }
+
+  // Handle bulk delete
+  const handleBulkDelete = async () => {
+    if (selectedMessages.size === 0) return
+    if (!confirm(t('chat.bulkDeleteConfirm', `Delete ${selectedMessages.size} messages?`))) return
+
+    const messageIds = Array.from(selectedMessages)
+    socket?.emit('messages:bulk-delete', { channelId, messageIds })
+    clearSelection()
+  }
 
   // Auto-scroll when new messages arrive
   useEffect(() => {
-    if (messages.length > prevMessageCountRef.current) {
+    if (safeMessages.length > prevMessageCountRef.current) {
       const container = containerRef.current
       if (container && isAtBottomRef.current) {
         scrollToBottom()
       }
     }
-    prevMessageCountRef.current = messages.length
-  }, [messages])
+    prevMessageCountRef.current = safeMessages.length
+  }, [safeMessages])
+
+  useEffect(() => {
+    setInitialLoad(true)
+    setHasMoreMessages(true)
+    restoredChannelRef.current = null
+    prevMessageCountRef.current = 0
+  }, [channelId])
 
   // Track if user is at bottom
   useEffect(() => {
@@ -71,21 +149,19 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
     return () => container.removeEventListener('scroll', checkAtBottom)
   }, [])
 
-  useEffect(() => {
-    if (initialLoad && messages.length > 0) {
-      if (scrollPosition > 0) {
-        // Restore scroll position for this channel
-        setTimeout(() => {
-          if (containerRef.current) {
-            containerRef.current.scrollTop = scrollPosition
-          }
-        }, 50)
-      } else {
-        scrollToBottom()
-      }
-      setInitialLoad(false)
+  useLayoutEffect(() => {
+    if (!initialLoad || safeMessages.length === 0 || !containerRef.current) return
+    if (restoredChannelRef.current === channelId) return
+
+    const container = containerRef.current
+    if (scrollPosition > 0) {
+      container.scrollTop = scrollPosition
+    } else {
+      container.scrollTop = container.scrollHeight
     }
-  }, [messages, initialLoad, scrollPosition])
+    restoredChannelRef.current = channelId
+    setInitialLoad(false)
+  }, [channelId, initialLoad, safeMessages.length, scrollPosition])
 
   // Save scroll position when scrolling
   useEffect(() => {
@@ -125,29 +201,54 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
   const loadMoreMessages = useCallback(async () => {
     if (isLoadingMore || !onLoadMore || !hasMoreMessages) return false
     
-    if (containerRef.current) {
-      scrollPositionRef.current = containerRef.current.scrollTop
-    }
-    
+    const container = containerRef.current
+    if (!container) return false
+
+    // Snapshot scroll geometry BEFORE any state changes
+    const previousScrollHeight = container.scrollHeight
+    const previousScrollTop = container.scrollTop
+
+    // Mark as loading immediately so the scroll handler won't re-enter
     setIsLoadingMore(true)
-    const oldestMessage = messages[0]
+    isLoadingMoreRef.current = true
+
+    const oldestMessage = safeMessages[0]
+    let hasMore = false
     
     try {
-      const hasMore = await onLoadMore(oldestMessage?.timestamp)
-      setHasMoreMessages(hasMore !== false)
-      return hasMore !== false
+      const result = await onLoadMore(oldestMessage?.timestamp)
+      // Treat undefined/null as "no more" so we stop polling
+      hasMore = result === true
+      setHasMoreMessages(hasMore)
+      return hasMore
     } catch (err) {
       console.error('Failed to load more messages:', err)
+      setHasMoreMessages(false)
       return false
     } finally {
-      setTimeout(() => {
-        if (containerRef.current && scrollPositionRef.current > 0) {
-          containerRef.current.scrollTop = scrollPositionRef.current + 100
+      // Restore scroll position BEFORE clearing the loading flag so the
+      // scroll handler cannot fire again while we're still near the top.
+      requestAnimationFrame(() => {
+        const nextContainer = containerRef.current
+        if (nextContainer) {
+          const heightDiff = nextContainer.scrollHeight - previousScrollHeight
+          if (heightDiff > 0) {
+            nextContainer.scrollTop = previousScrollTop + heightDiff
+          }
         }
-      }, 100)
-      setIsLoadingMore(false)
+        // Only clear the loading flag after the scroll is restored
+        setIsLoadingMore(false)
+        isLoadingMoreRef.current = false
+      })
     }
-  }, [isLoadingMore, onLoadMore, hasMoreMessages, messages])
+  }, [isLoadingMore, onLoadMore, hasMoreMessages, safeMessages])
+
+  const scrollTimeoutRef = useRef(null)
+  const isLoadingMoreRef = useRef(false)
+
+  useEffect(() => {
+    isLoadingMoreRef.current = isLoadingMore
+  }, [isLoadingMore])
 
   useEffect(() => {
     if (highlightMessageId) {
@@ -160,22 +261,32 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
     if (!container) return
 
     const handleScroll = () => {
-      if (isLoadingMore) return
-      
-      const { scrollTop } = container
-      
-      if (scrollTop < 50 && hasMoreMessages && onLoadMore && !isLoadingMore) {
-        loadMoreMessages()
+      if (scrollTimeoutRef.current) {
+        cancelAnimationFrame(scrollTimeoutRef.current)
       }
       
-      const { scrollHeight, clientHeight } = container
-      const distanceFromBottom = scrollHeight - scrollTop - clientHeight
-      setIsAtBottom(distanceFromBottom < 100)
+      scrollTimeoutRef.current = requestAnimationFrame(() => {
+        if (isLoadingMoreRef.current) return
+        
+        const { scrollTop, scrollHeight, clientHeight } = container
+        const distanceFromBottom = scrollHeight - scrollTop - clientHeight
+        
+        setIsAtBottom(distanceFromBottom < 100)
+        
+        if (scrollTop < 150 && hasMoreMessages && onLoadMore && !isLoadingMoreRef.current) {
+          loadMoreMessages()
+        }
+      })
     }
 
     container.addEventListener('scroll', handleScroll, { passive: true })
-    return () => container.removeEventListener('scroll', handleScroll)
-  }, [isLoadingMore, hasMoreMessages, onLoadMore, loadMoreMessages])
+    return () => {
+      container.removeEventListener('scroll', handleScroll)
+      if (scrollTimeoutRef.current) {
+        cancelAnimationFrame(scrollTimeoutRef.current)
+      }
+    }
+  }, [hasMoreMessages, onLoadMore, loadMoreMessages])
 
   const shouldGroupMessage = (current, previous) => {
     if (!previous) return false
@@ -197,18 +308,38 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
     setEditContent('')
   }
 
-  const handleDeleteMessage = (messageId) => {
-    if (!confirm(t('chat.deleteConfirm', 'Delete this message?'))) return
+  const handleDeleteMessage = (messageId, e) => {
+    // Skip confirmation if shift key is held down
+    const skipConfirm = e?.shiftKey
+    if (!skipConfirm && !confirm(t('chat.deleteConfirm', 'Delete this message?'))) return
     socket?.emit('message:delete', { messageId, channelId })
   }
 
   const handleAddReaction = (messageId, emoji) => {
     socket?.emit('reaction:add', { messageId, emoji, channelId })
     setShowEmojiPicker(null)
+    setEmojiPickerAnchor(null)
   }
 
   const handleRemoveReaction = (messageId, emoji) => {
     socket?.emit('reaction:remove', { messageId, emoji, channelId })
+  }
+
+  // Helper to render an emoji (unicode or custom)
+  const renderEmoji = (emoji, className = '') => {
+    // Check if it's a custom emoji object
+    if (emoji && typeof emoji === 'object' && emoji.type === 'custom') {
+      return (
+        <img 
+          src={emoji.url} 
+          alt={emoji.name} 
+          className={`reaction-custom-emoji ${className}`}
+          title={emoji.name}
+        />
+      )
+    }
+    // Unicode emoji
+    return <span className={className}>{emoji}</span>
   }
 
   const renderReactions = (message) => {
@@ -216,19 +347,21 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
 
     return (
       <div className="message-reactions">
-        {Object.entries(message.reactions).map(([emoji, users]) => {
-          const hasReacted = users.includes(currentUserId)
+        {Object.entries(message.reactions).map(([emojiKey, users]) => {
+          const emoji = deserializeReactionEmoji(emojiKey)
+          const reactionUsers = asArray(users)
+          const hasReacted = reactionUsers.includes(currentUserId)
           return (
             <button
-              key={emoji}
+              key={emojiKey}
               className={`reaction-badge ${hasReacted ? 'active' : ''}`}
               onClick={() => hasReacted 
-                ? handleRemoveReaction(message.id, emoji) 
-                : handleAddReaction(message.id, emoji)
+                ? handleRemoveReaction(message.id, serializeReactionEmoji(emoji)) 
+                : handleAddReaction(message.id, serializeReactionEmoji(emoji))
               }
             >
-              <span className="reaction-emoji">{emoji}</span>
-              <span className="reaction-count">{users.length}</span>
+              {renderEmoji(emoji, 'reaction-emoji')}
+              <span className="reaction-count">{reactionUsers.length}</span>
             </button>
           )
         })}
@@ -237,10 +370,11 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
   }
 
   const renderEmbeds = (embeds) => {
-    if (!embeds || embeds.length === 0) return null
+    const safeEmbeds = asArray(embeds)
+    if (safeEmbeds.length === 0) return null
     return (
       <div className="message-embeds">
-        {embeds.map((embed, i) => {
+        {safeEmbeds.map((embed, i) => {
           const borderColor = embed.color || 'var(--volt-primary)'
           return (
             <div key={i} className="message-embed" style={{ borderLeftColor: borderColor }}>
@@ -305,8 +439,12 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
     }
   }, [onShowProfile, members])
 
-  const renderMessageContent = (content, mentions) => {
+  const renderMessageContent = (content, mentions, attachments = []) => {
+    const safeAttachments = asArray(attachments)
     if (!content) return null
+    if (safeAttachments.length > 0 && isAttachmentOnlyPlaceholder(content)) {
+      return null
+    }
     return (
       <MarkdownMessage
         content={content}
@@ -321,20 +459,24 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
 
   const handleContextMenu = (e, message) => {
     e.preventDefault()
+    const clickX = e.clientX
+    const clickY = e.clientY
     const isOwn = message.userId === currentUserId
     const isPinned = message.pinned
-    
+    const isServerOwner = server?.ownerId === currentUserId
+    const canManageMessages = isAdmin || isServerOwner
+
     const items = [
       {
         label: 'Copy Message',
-        icon: <Copy size={14} />,
+        icon: <ClipboardDocumentIcon size={14} />,
         onClick: () => {
           navigator.clipboard.writeText(message.content)
         }
       },
       {
         label: 'Copy Message Link',
-        icon: <Link size={14} />,
+        icon: <LinkIcon size={14} />,
         onClick: () => {
           const url = `${window.location.origin}/chat/${channelId}?message=${message.id}`
           navigator.clipboard.writeText(url)
@@ -343,12 +485,12 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
       { type: 'separator' },
       ...(onReply ? [{
         label: 'Reply',
-        icon: <Reply size={14} />,
+        icon: <ArrowUturnLeftIcon size={14} />,
         onClick: () => onReply(message)
       }] : []),
       {
         label: isPinned ? 'Unpin Message' : 'Pin Message',
-        icon: <Pin size={14} />,
+        icon: <MapPinIcon size={14} />,
         onClick: () => {
           if (isPinned && onUnpinMessage) {
             onUnpinMessage(message.id)
@@ -359,14 +501,25 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
       },
       {
         label: t('chat.addReaction', 'Add Reaction'),
-        icon: <Smile size={14} />,
-        onClick: () => setShowEmojiPicker(message.id)
+        icon: <FaceSmileIcon size={14} />,
+        onClick: () => {
+          // Create a virtual rect from click position for the emoji picker
+          setEmojiPickerAnchor({
+            left: clickX,
+            top: clickY,
+            bottom: clickY,
+            right: clickX,
+            width: 0,
+            height: 0
+          })
+          setShowEmojiPicker(message.id)
+        }
       },
       { type: 'separator' },
       ...(isOwn ? [
         {
           label: t('common.edit', 'Edit'),
-          icon: <Edit2 size={14} />,
+          icon: <PencilIcon size={14} />,
           onClick: () => {
             setEditingMessage(message.id)
             setEditContent(message.content)
@@ -374,11 +527,27 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
         },
         {
           label: t('common.delete', 'Delete'),
-          icon: <Trash2 size={14} />,
+          icon: <TrashIcon size={14} />,
           danger: true,
-          onClick: () => handleDeleteMessage(message.id)
+          onClick: (e) => handleDeleteMessage(message.id, e)
         },
         { type: 'separator' }
+      ] : []),
+      ...(!isOwn && canManageMessages ? [
+        {
+          label: t('common.delete', 'Delete'),
+          icon: <TrashIcon size={14} />,
+          danger: true,
+          onClick: (e) => handleDeleteMessage(message.id, e)
+        },
+        { type: 'separator' }
+      ] : []),
+      ...(!isOwn && onReportMessage ? [
+        {
+          label: 'Report Message',
+          icon: <FlagIcon size={14} />,
+          onClick: () => onReportMessage(message)
+        }
       ] : [])
     ]
     
@@ -390,47 +559,140 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
     })
   }
 
+  const openEmojiPicker = (e, messageId) => {
+    const rect = e.currentTarget.getBoundingClientRect()
+    setEmojiPickerAnchor(rect)
+    setShowEmojiPicker(messageId)
+  }
+
+  // Render selection toolbar
+  const selectionToolbar = isSelectionMode ? (
+    <div className="selection-toolbar">
+      <div className="selection-toolbar-left">
+        <button className="selection-btn" onClick={clearSelection} title="Cancel">
+          <XCircleIcon size={18} />
+        </button>
+        <span className="selection-count">{selectedMessages.size} selected</span>
+      </div>
+      <div className="selection-toolbar-actions">
+        <button className="selection-btn" onClick={selectAllMessages} title="Select All">
+          <Square2StackIcon size={18} />
+        </button>
+        {canManageMessages && selectedMessages.size > 0 && (
+          <button className="selection-btn danger" onClick={handleBulkDelete} title="Delete Selected">
+            <TrashIcon size={18} />
+          </button>
+        )}
+      </div>
+    </div>
+  ) : canManageMessages ? (
+    <div className="selection-mode-toggle">
+      <button className="selection-mode-btn" onClick={toggleSelectionMode} title="Select Messages">
+        <Square2StackIcon size={16} />
+        <span>Select</span>
+      </button>
+    </div>
+  ) : null
+
+  // Render return-to-latest button via portal to avoid overflow clipping
+  const returnToLatestButton = (!isAtBottom && safeMessages.length > 0) ? (
+    <button className="return-to-latest" onClick={scrollToBottom}>
+      <ArrowDownIcon size={16} />
+      Return to Latest
+    </button>
+  ) : null
+
   return (
     <div className="message-list" ref={containerRef}>
+      {selectionToolbar}
       <div ref={topSentinelRef} className="scroll-sentinel" />
-      {!isAtBottom && messages.length > 0 && (
-        <button className="return-to-latest" onClick={scrollToBottom}>
-          <ArrowDown size={16} />
-          Return to Latest
-        </button>
-      )}
+      {returnToLatestButton && createPortal(returnToLatestButton, document.body)}
       {isLoadingMore && (
         <div className="loading-more-messages">
-          <Loader2 size={20} className="spinning" />
+          <ArrowPathIcon size={20} className="spinning" />
         </div>
       )}
       <div className="messages-container" ref={messagesStartRef}>
-        {messages.length === 0 ? (
-          <div className="no-messages">
-            <MessageSquare size={48} className="no-messages-icon" />
-            <h3>No messages yet</h3>
-            <p>Be the first to start the conversation!</p>
-          </div>
+        {safeMessages.length === 0 ? (
+          isLoading ? (
+            <div className="no-messages loading-state">
+              <div className="loading-spinner"></div>
+              <h3>Loading messages...</h3>
+              <p>Please wait while we load the conversation.</p>
+            </div>
+          ) : (
+            <div className="no-messages">
+              <ChatBubbleLeftRightIcon size={48} className="no-messages-icon" />
+              <h3>{emptyState?.title || 'No messages yet'}</h3>
+              <p>{emptyState?.message || 'Be the first to start the conversation!'}</p>
+              {emptyState?.code ? (
+                <div className="no-messages-diagnostic-code">
+                  {t('chat.debugCode', 'Diagnostic code')}: {emptyState.code}
+                </div>
+              ) : null}
+              {Array.isArray(emptyState?.fixes) && emptyState.fixes.length > 0 ? (
+                <div className="no-messages-diagnostics">
+                  <h4>{t('chat.suggestedFixes', 'Suggested fixes')}</h4>
+                  <ul>
+                    {emptyState.fixes.map((fix, index) => (
+                      <li key={`${emptyState.code || 'fix'}-${index}`}>{fix}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {emptyState?.diagnostics ? (
+                <div className="no-messages-meta">
+                  {emptyState.diagnostics.channelName ? (
+                    <span>{t('chat.channelLabel', 'Channel')}: {emptyState.diagnostics.channelName}</span>
+                  ) : null}
+                  {emptyState.diagnostics.serverName ? (
+                    <span>{t('chat.serverLabel', 'Server')}: {emptyState.diagnostics.serverName}</span>
+                  ) : null}
+                  {emptyState.diagnostics.userIsMember === false ? (
+                    <span>{t('chat.membershipMissing', 'Authenticated user is not a member of this server.')}</span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          )
         ) : (
-          messages.map((message, index) => {
-            const previousMessage = index > 0 ? messages[index - 1] : null
+          safeMessages.map((message, index) => {
+            const previousMessage = index > 0 ? safeMessages[index - 1] : null
             const grouped = shouldGroupMessage(message, previousMessage)
             const isOwn = message.userId === currentUserId
             const isHovered = hoveredMessage === message.id
+            const sendStatus = isOwn ? (message._sendStatus || 'sent') : 'sent'
+            const isDeleted = Boolean(message.deleted)
+            
+            const messageMentions = message.mentions
+            const isMentioned = messageMentions?.users?.includes(currentUserId) || 
+              messageMentions?.usernames?.some(u => u.toLowerCase() === currentUserId?.toLowerCase()) ||
+              message.content?.toLowerCase().includes('@everyone') ||
+              message.content?.toLowerCase().includes('@here')
 
             return (
               <div
                 key={message.id}
                 id={`message-${message.id}`}
-                className={`message ${grouped ? 'grouped' : ''} ${isOwn ? 'own' : ''}`}
+                className={`message ${grouped ? 'grouped' : ''} ${isOwn ? 'own' : ''} ${sendStatus === 'sending' ? 'sending' : ''} ${sendStatus === 'failed' ? 'failed' : ''} ${isMentioned ? 'mentioned' : ''}`}
                 onMouseEnter={() => setHoveredMessage(message.id)}
                 onMouseLeave={() => setHoveredMessage(null)}
                 onContextMenu={(e) => handleContextMenu(e, message)}
               >
                 {message.replyTo && (
-                  <div className="message-reply-ref">
-                    <Reply size={12} />
-                    <span>Replying to {message.replyTo.username}</span>
+                  <div 
+                    className={`message-reply-ref ${message.replyTo.deleted ? 'deleted' : ''}`}
+                    onClick={() => !message.replyTo.deleted && scrollToMessage(message.replyTo.id)}
+                  >
+                    <ArrowUturnLeftIcon size={12} />
+                    {message.replyTo.deleted ? (
+                      <span className="reply-deleted">Original message was deleted</span>
+                    ) : (
+                      <>
+                        <span className="reply-author">{message.replyTo.username}</span>
+                        <span className="reply-content">{message.replyTo.content?.slice(0, 80)}{message.replyTo.content?.length > 80 ? '...' : ''}</span>
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -443,21 +705,31 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
                       size={40}
                       className="message-avatar"
                       onClick={() => onShowProfile?.(message.userId)}
+                      userId={message.userId}
                     />
                     <span className="message-author" onClick={() => onShowProfile?.(message.userId)}>{message.username}</span>
-                    {message.bot && (
+                    {Boolean(message.bot) && (
                       <span className="bot-badge">BOT</span>
                     )}
-                    {message.encrypted && (
+                    {(message.encrypted || message.iv) && (
                       <span className="encrypted-badge" title="End-to-end encrypted">E2EE</span>
+                    )}
+                    {!(message.encrypted || message.iv) && (
+                      <span className="unencrypted-badge" title="Not end-to-end encrypted">PLAIN</span>
                     )}
                     <span className="message-timestamp">
                       {formatDistance(new Date(message.timestamp), new Date(), { addSuffix: true })}
                     </span>
+                    {isOwn && sendStatus === 'sending' && (
+                      <span className="message-send-state sending">Sending...</span>
+                    )}
+                    {isOwn && sendStatus === 'failed' && (
+                      <span className="message-send-state failed">Failed to send</span>
+                    )}
                   </div>
                 )}
 
-                {editingMessage === message.id ? (
+                {editingMessage === message.id && !isDeleted ? (
                   <div className="message-edit-container">
                     <input
                       type="text"
@@ -472,21 +744,33 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
                     />
                     <div className="message-edit-actions">
                       <button className="edit-cancel" onClick={() => setEditingMessage(null)}>
-                        <X size={14} /> Cancel
+                        <XMarkIcon size={14} /> Cancel
                       </button>
                       <button className="edit-save" onClick={() => handleEditMessage(message.id)}>
-                        <Check size={14} /> Save
+                        <CheckIcon size={14} /> Save
                       </button>
                     </div>
                   </div>
                 ) : (
                   <div className="message-content">
-                    {renderMessageContent(message.content, message.mentions)}
-                    {message.edited && <span className="edited-tag">(edited)</span>}
+                    {isDeleted ? (
+                      <span className="message-deleted-copy">{t('chat.messageDeleted', 'This message has been deleted')}</span>
+                    ) : (
+                      <>
+                        {renderMessageContent(message.content, message.mentions, message.attachments)}
+                        {Boolean(message.edited) && <span className="edited-tag">(edited)</span>}
+                      </>
+                    )}
+                    {isOwn && grouped && sendStatus === 'sending' && (
+                      <span className="message-send-state-inline sending">Sending...</span>
+                    )}
+                    {isOwn && grouped && sendStatus === 'failed' && (
+                      <span className="message-send-state-inline failed">Failed to send</span>
+                    )}
                   </div>
                 )}
 
-                {message.attachments && message.attachments.length > 0 && (
+                {!isDeleted && message.attachments && message.attachments.length > 0 && (
                   <div className="message-attachments">
                     {message.attachments.map((attachment, i) => (
                       <FileAttachment key={i} attachment={attachment} />
@@ -494,11 +778,19 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
                   </div>
                 )}
 
-                {renderEmbeds(message.embeds)}
+                {!isDeleted && renderEmbeds(message.embeds)}
 
-                {renderReactions(message)}
+                {!isDeleted && message.ui && (
+                  <BotUIMessage
+                    ui={message.ui}
+                    messageId={message.id}
+                    channelId={channelId}
+                  />
+                )}
 
-                {isHovered && !editingMessage && (
+                {!isDeleted && renderReactions(message)}
+
+                {isHovered && !editingMessage && !isDeleted && (
                   <div className="message-actions">
                     {QUICK_REACTIONS.map(emoji => (
                       <button
@@ -512,10 +804,10 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
                     ))}
                     <button
                       className="action-btn"
-                      onClick={() => setShowEmojiPicker(message.id)}
+                      onClick={(e) => openEmojiPicker(e, message.id)}
                       title="Add Reaction"
                     >
-                      <Smile size={16} />
+                      <FaceSmileIcon size={16} />
                     </button>
                     {onReply && (
                       <button
@@ -523,7 +815,7 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
                         onClick={() => onReply(message)}
                         title="Reply"
                       >
-                        <Reply size={16} />
+                        <ArrowUturnLeftIcon size={16} />
                       </button>
                     )}
                     {isOwn && (
@@ -533,26 +825,17 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
                           onClick={() => { setEditingMessage(message.id); setEditContent(message.content) }}
                           title="Edit"
                         >
-                          <Edit2 size={16} />
+                          <PencilIcon size={16} />
                         </button>
                         <button
                           className="action-btn delete"
-                          onClick={() => handleDeleteMessage(message.id)}
+                          onClick={(e) => handleDeleteMessage(message.id, e)}
                           title="Delete"
                         >
-                          <Trash2 size={16} />
+                          <TrashIcon size={16} />
                         </button>
                       </>
                     )}
-                  </div>
-                )}
-
-                {showEmojiPicker === message.id && (
-                  <div className="message-emoji-picker">
-                    <EmojiPicker
-                      onSelect={(emoji) => handleAddReaction(message.id, emoji)}
-                      onClose={() => setShowEmojiPicker(null)}
-                    />
                   </div>
                 )}
               </div>
@@ -562,6 +845,23 @@ const MessageList = ({ messages, currentUserId, channelId, onReply, onLoadMore, 
         <div ref={messagesEndRef} />
       </div>
       
+      {/* Portal-based emoji picker */}
+      <ReactionEmojiPicker
+        isOpen={!!showEmojiPicker}
+        anchorRect={emojiPickerAnchor}
+        onSelect={(emoji) => {
+          if (showEmojiPicker) {
+            handleAddReaction(showEmojiPicker, serializeReactionEmoji(emoji))
+          }
+        }}
+        onClose={() => {
+          setShowEmojiPicker(null)
+          setEmojiPickerAnchor(null)
+        }}
+        serverEmojis={serverEmojis}
+      />
+      
+      {/* Portal-based context menu */}
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}

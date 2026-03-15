@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Globe, Plus, Trash2, RefreshCw, CheckCircle, XCircle, Link, Send, Clock, Share2 } from 'lucide-react'
+import { GlobeAltIcon, PlusIcon, TrashIcon, ArrowPathIcon, CheckCircleIcon, XCircleIcon, LinkIcon, PaperAirplaneIcon, ClockIcon, ShareIcon, ArrowPathIcon as RetryIcon } from '@heroicons/react/24/outline'
 import { apiService } from '../services/apiService'
 import './FederationPanel.css'
 
@@ -51,9 +51,9 @@ const FederationPanel = () => {
 
   const handleAddPeer = async (e) => {
     e.preventDefault()
-    if (!peerForm.name || !peerForm.url) return
+    if (!peerForm.url) return
     try {
-      await apiService.addFederationPeer(peerForm)
+      await apiService.addFederationPeer({ url: peerForm.url, name: peerForm.name || undefined })
       setPeerForm({ name: '', url: '' })
       setShowAddPeer(false)
       loadPeers()
@@ -114,10 +114,10 @@ const FederationPanel = () => {
 
   const getStatusIcon = (status) => {
     switch (status) {
-      case 'connected': return <CheckCircle size={14} className="status-connected" />
-      case 'pending': return <Clock size={14} className="status-pending" />
-      case 'rejected': return <XCircle size={14} className="status-rejected" />
-      default: return <XCircle size={14} className="status-error" />
+      case 'connected': return <CheckCircleIcon size={14} className="status-connected" />
+      case 'pending': return <ClockIcon size={14} className="status-pending" />
+      case 'rejected': return <XCircleIcon size={14} className="status-rejected" />
+      default: return <XCircleIcon size={14} className="status-error" />
     }
   }
 
@@ -126,7 +126,7 @@ const FederationPanel = () => {
       {info && (
         <div className="federation-info-card">
           <div className="info-row">
-            <Globe size={16} />
+            <GlobeAltIcon size={16} />
             <span className="info-label">Host:</span>
             <span className="info-value">{info.host}</span>
           </div>
@@ -148,10 +148,10 @@ const FederationPanel = () => {
           <h3>Federated Peers</h3>
           <div className="section-actions">
             <button className="btn btn-sm btn-ghost" onClick={loadPeers} title="Refresh">
-              <RefreshCw size={14} />
+              <ArrowPathIcon size={14} />
             </button>
             <button className="btn btn-sm btn-primary" onClick={() => setShowAddPeer(true)}>
-              <Plus size={14} /> Add Peer
+              <PlusIcon size={14} /> Add Peer
             </button>
           </div>
         </div>
@@ -159,7 +159,7 @@ const FederationPanel = () => {
         {showAddPeer && (
           <form className="inline-form" onSubmit={handleAddPeer}>
             <input
-              placeholder="Mainline name"
+              placeholder="Name (optional - auto-fetched)"
               value={peerForm.name}
               onChange={e => setPeerForm(p => ({ ...p, name: e.target.value }))}
             />
@@ -188,6 +188,13 @@ const FederationPanel = () => {
                     <span className="peer-direction">({peer.direction})</span>
                   </div>
                   <div className="peer-host">{peer.host}</div>
+                  {peer.version && <div className="peer-version">Version: {peer.version}</div>}
+                  {peer.mode && <div className="peer-mode">Mode: {peer.mode}</div>}
+                  {peer.federationEnabled !== null && (
+                    <div className={`info-badge ${peer.federationEnabled ? 'enabled' : 'disabled'}`}>
+                      Federation: {peer.federationEnabled ? 'Enabled' : 'Disabled'}
+                    </div>
+                  )}
                   {peer.lastSeen && (
                     <div className="peer-last-seen">Last seen: {new Date(peer.lastSeen).toLocaleString()}</div>
                   )}
@@ -196,15 +203,20 @@ const FederationPanel = () => {
                   {peer.status === 'pending' && peer.direction === 'incoming' && (
                     <>
                       <button className="btn btn-sm btn-success" onClick={() => handleAcceptPeer(peer.id)}>
-                        <CheckCircle size={14} /> Accept
+                        <CheckCircleIcon size={14} /> Accept
                       </button>
                       <button className="btn btn-sm btn-danger" onClick={() => handleRejectPeer(peer.id)}>
-                        <XCircle size={14} /> Reject
+                        <XCircleIcon size={14} /> Reject
                       </button>
                     </>
                   )}
+                  {peer.status === 'pending' && peer.direction === 'outgoing' && (
+                    <button className="btn btn-sm btn-primary" onClick={loadPeers} title="Retry connection">
+                      <ArrowPathIcon size={14} /> Retry
+                    </button>
+                  )}
                   <button className="btn btn-sm btn-ghost btn-danger" onClick={() => handleRemovePeer(peer.id)}>
-                    <Trash2 size={14} />
+                    <TrashIcon size={14} />
                   </button>
                 </div>
               </div>
@@ -217,7 +229,7 @@ const FederationPanel = () => {
         <div className="section-header">
           <h3>Shared Invites</h3>
           <button className="btn btn-sm btn-primary" onClick={() => setShowShareInvite(true)}>
-            <Share2 size={14} /> Share Invite
+            <ShareIcon size={14} /> Share Invite
           </button>
         </div>
 
@@ -252,14 +264,14 @@ const FederationPanel = () => {
                 <div className="invite-info">
                   <div className="invite-server">{invite.serverName || invite.serverId}</div>
                   <div className="invite-code">
-                    <Link size={12} /> {invite.code}
+                    <LinkIcon size={12} /> {invite.code}
                   </div>
                   <div className="invite-meta">
                     From: {invite.sourceMainline} | Uses: {invite.uses}{invite.maxUses ? `/${invite.maxUses}` : ''}
                   </div>
                 </div>
                 <button className="btn btn-sm btn-ghost btn-danger" onClick={() => handleRemoveInvite(invite.id)}>
-                  <Trash2 size={14} />
+                  <TrashIcon size={14} />
                 </button>
               </div>
             ))}

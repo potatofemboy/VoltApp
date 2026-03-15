@@ -1,12 +1,16 @@
-import React, { useState, useEffect } from 'react'
-import { Users, Plus, X, Search, Copy, Trash2, Bell } from 'lucide-react'
+import React, { useState, useEffect, useCallback } from 'react'
+import { UsersIcon, PlusIcon, XMarkIcon, MagnifyingGlassIcon, ClipboardDocumentIcon, BellIcon, BellSlashIcon, ArrowPathIcon, WifiIcon } from '@heroicons/react/24/outline'
+import { Lock, Shield, ShieldOff, Key } from 'lucide-react'
 import { useTranslation } from '../hooks/useTranslation'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { apiService } from '../services/apiService'
 import { useSocket } from '../contexts/SocketContext'
+import { useE2e } from '../contexts/E2eContext'
 import { soundService } from '../services/soundService'
 import Avatar from './Avatar'
 import ContextMenu from './ContextMenu'
+import E2eeEnableModal from './E2eeEnableModal'
+import E2eeKeyPromptModal from './E2eeKeyPromptModal'
 import '../assets/styles/DMList.css'
 import '../assets/styles/SystemMessagePanel.css'
 
@@ -14,7 +18,12 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
   const { t } = useTranslation()
   const navigate = useNavigate()
   const location = useLocation()
-  const { socket, connected, systemUnreadCount } = useSocket()
+  const { socket, connected, reconnecting, systemUnreadCount } = useSocket()
+  const { 
+    isDmEncryptionEnabled, 
+    getDmEncryptionFullStatus,
+    disableDmEncryption 
+  } = useE2e()
   const [conversations, setConversations] = useState([])
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
@@ -23,31 +32,93 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
   const [searching, setSearching] = useState(false)
   const [selectedUserIds, setSelectedUserIds] = useState([])
   const [contextMenu, setContextMenu] = useState(null)
+  const [mutedDMs, setMutedDMs] = useState({})
+  const [e2eeModalConv, setE2eeModalConv] = useState(null)
+  const [keyPromptConv, setKeyPromptConv] = useState(null)
+  const [dmE2eeStatus, setDmE2eeStatus] = useState({})
+  const [lastRealtimeAt, setLastRealtimeAt] = useState(null)
+  const [statusNow, setStatusNow] = useState(Date.now())
+
+  const markRealtimeUpdate = useCallback(() => {
+    setLastRealtimeAt(Date.now())
+  }, [])
+
+  const formatFreshness = useCallback((timestamp) => {
+    if (!timestamp) return t('common.loading', 'Loading')
+    const seconds = Math.max(0, Math.floor((statusNow - timestamp) / 1000))
+    if (seconds < 5) return t('common.justNow', 'just now')
+    if (seconds < 60) return `${seconds}s ago`
+    const minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return `${minutes}m ago`
+    const hours = Math.floor(minutes / 60)
+    return `${hours}h ago`
+  }, [statusNow, t])
+
+  const loadConversations = useCallback(async (search = '') => {
+    try {
+      const res = await apiService.getDirectMessages(search)
+      setConversations(res.data)
+      markRealtimeUpdate()
+    } catch (err) {
+      console.error('Failed to load conversations:', err)
+    }
+    setLoading(false)
+  }, [markRealtimeUpdate])
 
   useEffect(() => {
     loadConversations()
-  }, [type])
+    loadMuteStatus()
+  }, [type, loadConversations])
+
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      setStatusNow(Date.now())
+    }, 15000)
+
+    return () => clearInterval(intervalId)
+  }, [])
+
+  const loadMuteStatus = async () => {
+    try {
+      const res = await apiService.getNotificationSettings()
+      const muted = {}
+      ;(res.data?.dmMutes || []).forEach(m => {
+        if (m.conversationId && (!m.expiresAt || new Date(m.expiresAt) > new Date())) {
+          muted[m.conversationId] = true
+        }
+      })
+      setMutedDMs(muted)
+    } catch (err) {
+      console.error('Failed to load mute status:', err)
+    }
+  }
 
   useEffect(() => {
     if (!socket || !connected) return
 
-    const handleNewDM = (data) => {
+    const handleNewDM = () => {
+      markRealtimeUpdate()
       loadConversations()
     }
 
     socket.on('dm:new', handleNewDM)
     socket.on('dm:created', handleNewDM)
+    socket.on('dm:edited', handleNewDM)
+    socket.on('dm:deleted', handleNewDM)
 
     return () => {
       socket.off('dm:new', handleNewDM)
       socket.off('dm:created', handleNewDM)
+      socket.off('dm:edited', handleNewDM)
+      socket.off('dm:deleted', handleNewDM)
     }
-  }, [socket, connected])
+  }, [socket, connected, loadConversations, markRealtimeUpdate])
 
   useEffect(() => {
     if (!socket || !connected) return
 
     const handleStatusUpdate = ({ userId, status, customStatus }) => {
+      markRealtimeUpdate()
       setConversations(prev => prev.map(conv => {
         if (conv.recipient?.id === userId) {
           return {
@@ -59,8 +130,9 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
       }))
     }
 
-    const handleDMNotification = (data) => {
+    const handleDMNotification = () => {
       soundService.dmReceived()
+      markRealtimeUpdate()
       loadConversations()
     }
 
@@ -73,17 +145,7 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
       socket.off('dm:notification', handleDMNotification)
       socket.off('dm:new', handleDMNotification)
     }
-  }, [socket, connected])
-
-  const loadConversations = async (search = '') => {
-    try {
-      const res = await apiService.getDirectMessages(search)
-      setConversations(res.data)
-    } catch (err) {
-      console.error('Failed to load conversations:', err)
-    }
-    setLoading(false)
-  }
+  }, [socket, connected, loadConversations, markRealtimeUpdate])
 
   const handleSearchUsers = async (query) => {
     setSearchQuery(query)
@@ -184,11 +246,25 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
     return title.includes(q) || recipientMatch || recipientsMatch
   })
 
+  const syncState = !connected ? 'offline' : reconnecting ? 'reconnecting' : 'live'
+  const syncLabel = syncState === 'offline'
+    ? t('chat.disconnected', 'Disconnected')
+    : syncState === 'reconnecting'
+      ? t('chat.reconnecting', 'Reconnecting...')
+      : t('chat.connected', 'Connected')
+  const syncDetail = loading
+    ? t('common.loading', 'Loading')
+    : syncState === 'offline'
+      ? t('dm.syncOfflineHint', 'Realtime updates paused until the connection returns')
+      : syncState === 'reconnecting'
+        ? t('dm.syncReconnectingHint', 'Resyncing conversations and unread state')
+        : `${t('dm.updated', 'Updated')} ${formatFreshness(lastRealtimeAt)}`
+
   return (
     <div className="dm-list">
       <div className="dm-header">
         <div className="dm-search">
-          <Search size={16} className="search-icon" />
+          <MagnifyingGlassIcon size={16} className="search-icon" />
           <input 
             type="text" 
             placeholder={t('dm.selectDm')}
@@ -197,6 +273,13 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
             onChange={e => handleSearchUsers(e.target.value)}
           />
         </div>
+        <div className={`dm-sync-status ${syncState}`}>
+          <div className="dm-sync-pill">
+            {syncState === 'reconnecting' ? <ArrowPathIcon size={14} className="spinning" /> : <WifiIcon size={14} />}
+            <span>{syncLabel}</span>
+          </div>
+          <span className="dm-sync-detail">{syncDetail}</span>
+        </div>
       </div>
 
       <div className="dm-items">
@@ -204,7 +287,7 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
           className={`dm-item nav-item ${location.pathname === '/chat/friends' ? 'active' : ''}`}
           onClick={() => navigate('/chat/friends')}
         >
-          <Users size={24} />
+          <UsersIcon size={24} />
           <span>{t('friends.title')}</span>
         </button>
 
@@ -214,7 +297,7 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
           title={t('system.systemInbox')}
         >
           <div className="sysmsg-sidebar-icon">
-            <Bell size={18} />
+            <BellIcon size={18} />
           </div>
           <span>{t('system.systemInbox')}</span>
           {systemUnreadCount > 0 && (
@@ -225,7 +308,7 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
         <div className="dm-section-header">
           <span>{t('dm.title').toUpperCase()}</span>
           <button className="dm-add-btn" onClick={() => setShowNewDM(!showNewDM)} title={t('dm.newMessage')}>
-            {showNewDM ? <X size={16} /> : <Plus size={16} />}
+            {showNewDM ? <XMarkIcon size={16} /> : <PlusIcon size={16} />}
           </button>
         </div>
 
@@ -291,16 +374,72 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
                       ? `${(conv.recipients || []).length} members`
                       : conv.recipient?.customStatus
                     const copyId = isGroup ? conv.id : conv.recipient?.id
+                    const unreadCount = Number(conv.unreadCount) || 0
                     return (
-                  <button 
+                  <div 
                     key={conv.id}
-                    className={`dm-conversation ${selectedConversation?.id === conv.id ? 'active' : ''}`}
+                    className={`dm-conversation ${selectedConversation?.id === conv.id ? 'active' : ''} ${unreadCount > 0 ? 'unread' : ''}`}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handleSelectConversation(conv)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        handleSelectConversation(conv)
+                      }
+                    }}
                     onContextMenu={(e) => {
                       e.preventDefault()
+                      const isMuted = mutedDMs[conv.id]
+                      const e2eeEnabled = isDmEncryptionEnabled(conv.id)
                       const items = [
                         {
-                          icon: <X size={16} />,
+                          icon: isMuted ? <BellIcon size={16} /> : <BellSlashIcon size={16} />,
+                          label: isMuted ? 'Unmute Notifications' : 'Mute Notifications',
+                          onClick: async () => {
+                            try {
+                              await apiService.muteDm(conv.id, !isMuted)
+                              setMutedDMs(prev => ({ ...prev, [conv.id]: !isMuted }))
+                            } catch (err) {
+                              console.error('Failed to toggle mute:', err)
+                            }
+                          }
+                        },
+                        { type: 'separator' },
+                        // E2EE Section
+                        ...(e2eeEnabled ? [
+                          {
+                            icon: <Lock size={16} />,
+                            label: 'Encryption Enabled',
+                            disabled: true,
+                            className: 'menu-header'
+                          },
+                          {
+                            icon: <ShieldOff size={16} />,
+                            label: 'Disable E2EE',
+                            onClick: async () => {
+                              try {
+                                await disableDmEncryption(conv.id)
+                              } catch (err) {
+                                console.error('Failed to disable E2EE:', err)
+                              }
+                            }
+                          },
+                          {
+                            icon: <Key size={16} />,
+                            label: 'Enter/Update Key',
+                            onClick: () => setKeyPromptConv(conv)
+                          }
+                        ] : [
+                          {
+                            icon: <Shield size={16} />,
+                            label: 'Enable E2EE',
+                            onClick: () => setE2eeModalConv(conv)
+                          }
+                        ]),
+                        { type: 'separator' },
+                        {
+                          icon: <XMarkIcon size={16} />,
                           label: t('modals.close'),
                           onClick: () => {
                             if (onClose) onClose(conv.id)
@@ -309,7 +448,7 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
                         },
                         { type: 'separator' },
                         {
-                          icon: <Copy size={16} />,
+                          icon: <ClipboardDocumentIcon size={16} />,
                           label: isGroup ? t('common.copy', 'Copy conversation id') : t('account.userId'),
                           onClick: () => copyId && navigator.clipboard.writeText(copyId)
                         },
@@ -322,6 +461,7 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
                         src={isGroup ? null : conv.recipient?.avatar}
                         fallback={isGroup ? convTitle : conv.recipient?.username}
                         size={32}
+                        userId={isGroup ? null : conv.recipient?.id}
                       />
                       {!isGroup && (
                         <span 
@@ -338,7 +478,16 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
                         <span className="dm-conv-status">{convStatus}</span>
                       )}
                     </div>
-                    <button 
+                    <div className="dm-conv-meta">
+                      {unreadCount > 0 && (
+                        <span className="dm-unread-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>
+                      )}
+                      {lastRealtimeAt && unreadCount === 0 && (
+                        <span className="dm-updated-badge">{formatFreshness(lastRealtimeAt)}</span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
                       className="dm-close-btn"
                       onClick={(e) => {
                         e.stopPropagation()
@@ -348,9 +497,9 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
                         setConversations(prev => prev.filter(c => c.id !== conv.id))
                       }}
                     >
-                      <X size={14} />
+                      <XMarkIcon size={14} />
                     </button>
-                  </button>
+                  </div>
                     )
                 })}
               </div>
@@ -363,6 +512,30 @@ const DMList = ({ type, onSelectConversation, selectedConversation, onClose, onO
           y={contextMenu.y}
           items={contextMenu.items}
           onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {/* E2EE Enable Modal */}
+      {e2eeModalConv && (
+        <E2eeEnableModal
+          isOpen={true}
+          onClose={() => setE2eeModalConv(null)}
+          conversation={e2eeModalConv}
+          onEnabled={() => {
+            setE2eeModalConv(null)
+          }}
+        />
+      )}
+
+      {/* E2EE Key Prompt Modal */}
+      {keyPromptConv && (
+        <E2eeKeyPromptModal
+          isOpen={true}
+          onClose={() => setKeyPromptConv(null)}
+          conversation={keyPromptConv}
+          onKeyEntered={() => {
+            setKeyPromptConv(null)
+          }}
         />
       )}
     </div>

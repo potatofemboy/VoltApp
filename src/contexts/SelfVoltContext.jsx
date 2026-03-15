@@ -24,10 +24,20 @@ export const SelfVoltProvider = ({ children }) => {
     setLoading(true)
     try {
       const response = await apiService.getMySelfVolts()
-      setSelfVolts(response?.data || [])
+      const data = response?.data
+      // Ensure we always set an array
+      if (Array.isArray(data)) {
+        setSelfVolts(data)
+      } else if (data && typeof data === 'object') {
+        // If data is an object, try to extract array from common patterns
+        setSelfVolts(data.volts || data.servers || data.items || [])
+      } else {
+        setSelfVolts([])
+      }
     } catch (err) {
       console.error('[SelfVolt] Error loading volts:', err)
       setError(err.message)
+      setSelfVolts([])
     } finally {
       setLoading(false)
     }

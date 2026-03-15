@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { X, Folder, Trash2 } from 'lucide-react'
+import { XMarkIcon, FolderIcon, TrashIcon } from '@heroicons/react/24/outline'
 import { apiService } from '../../services/apiService'
 import { useTranslation } from '../../hooks/useTranslation'
 import './Modal.css'
@@ -41,11 +41,11 @@ const CategorySettingsModal = ({ category, onClose, onUpdate, onDelete }) => {
       <div className="modal-content" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <Folder size={24} />
+            <FolderIcon size={24} />
             <h2>{t('serverSettings.categories')}</h2>
           </div>
           <button className="modal-close" onClick={onClose}>
-            <X size={24} />
+            <XMarkIcon size={24} />
           </button>
         </div>
 
@@ -53,7 +53,7 @@ const CategorySettingsModal = ({ category, onClose, onUpdate, onDelete }) => {
           <div className="form-group">
             <label>{t('modals.categoryName')}</label>
             <div className="category-name-input">
-              <Folder size={18} />
+              <FolderIcon size={18} />
               <input
                 type="text"
                 className="input"
@@ -71,7 +71,7 @@ const CategorySettingsModal = ({ category, onClose, onUpdate, onDelete }) => {
               onClick={() => setConfirmDelete(true)}
               style={{ width: '100%' }}
             >
-              <Trash2 size={16} style={{ marginRight: '8px' }} />
+              <TrashIcon size={16} style={{ marginRight: '8px' }} />
               Delete Category
             </button>
             <p style={{ fontSize: '12px', color: 'var(--volt-text-muted)', marginTop: '8px' }}>

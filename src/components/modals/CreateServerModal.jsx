@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { X } from 'lucide-react'
+import { XMarkIcon } from '@heroicons/react/24/outline'
 import { apiService } from '../../services/apiService'
 import { useTranslation } from '../../hooks/useTranslation'
 import './Modal.css'
@@ -37,7 +37,7 @@ const CreateServerModal = ({ onClose, onSuccess }) => {
         <div className="modal-header">
           <h2>{t('modals.createServer')}</h2>
           <button className="modal-close" onClick={onClose}>
-            <X size={24} />
+            <XMarkIcon size={24} />
           </button>
         </div>
 

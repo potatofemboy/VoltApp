@@ -1,22 +1,36 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { Hash, Users, Pin, Search, Smile, X, FileText, Lock, AtSign, Radio } from 'lucide-react'
+import { HashtagIcon, UsersIcon, MapPinIcon, XMarkIcon, MagnifyingGlassIcon, DocumentTextIcon, ArrowUturnLeftIcon } from "@heroicons/react/24/outline";
+import { Hash, Users, MapPin, Search, Smile, X, FileText, Lock, AtSign, Signal, Grip, LayoutGrid } from 'lucide-react'
 import { useSocket } from '../contexts/SocketContext'
 import { useAuth } from '../contexts/AuthContext'
 import { useE2e } from '../contexts/E2eContext'
 import { useE2eTrue } from '../contexts/E2eTrueContext'
 import { apiService } from '../services/apiService'
+import {
+  buildClientSignature,
+  runSafetyScan,
+  warmupSafetyModels
+} from '../services/localSafetyService'
+import {
+  buildTransmitContentFlags,
+  scanSelectedImageFiles
+} from '../services/nsfwDetectionService'
 import { useTranslation } from '../hooks/useTranslation'
 import { soundService } from '../services/soundService'
 import { getStoredServer } from '../services/serverConfig'
 import { preloadHostMetadata } from '../services/hostMetadataService'
 import MessageList from './MessageList'
 import EmojiPicker from './EmojiPicker'
+import KlipyPicker from './KlipyPicker'
 import ChatInput from './ChatInput'
 import MarkdownMessage from './MarkdownMessage'
+import { EncryptionFallback } from './EncryptionFallback'
+import WidgetManager from './WidgetManager'
+import { loadWidgets, saveWidgets, subscribeWidgets } from '../services/widgetService'
 import '../assets/styles/ChatArea.css'
 import '../assets/styles/ChatInput.css'
 
-const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAgeGateTriggered, onLoadMoreMessages, onToggleMembers, onSaveScrollPosition, scrollPosition, onShowProfile }) => {
+const ChatArea = ({ channelId, serverId, channels, messages, channelDiagnostic = null, initialMembers = [], initialServer = null, onMessageSent, onMessageFailed, onMessageAck, onAgeGateTriggered, onLoadMoreMessages, onToggleMembers, onSaveScrollPosition, scrollPosition, onShowProfile, isAdmin, isLoading }) => {
   const { socket, connected } = useSocket()
   const { user } = useAuth()
   const { t } = useTranslation()
@@ -32,6 +46,7 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
   const [typingUsers, setTypingUsers] = useState(new Set())
   const [sendError, setSendError] = useState('')
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const [showKlipyPicker, setShowKlipyPicker] = useState(false)
   const [serverEmojis, setServerEmojis] = useState([])
   const [attachments, setAttachments] = useState([])
   const [uploadProgress, setUploadProgress] = useState(null) // null = idle, 0-100 = uploading
@@ -40,7 +55,8 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
   const [mentionQuery, setMentionQuery] = useState('')
   const [mentionSuggestions, setMentionSuggestions] = useState([])
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0)
-  const [members, setMembers] = useState([])
+  const [members, setMembers] = useState(Array.isArray(initialMembers) ? initialMembers : [])
+  const [server, setServer] = useState(initialServer || null)
   const [showSearchModal, setShowSearchModal] = useState(false)
   const [showPinnedModal, setShowPinnedModal] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -50,6 +66,12 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
   const [isLoadingPins, setIsLoadingPins] = useState(false)
   const [highlightMessageId, setHighlightMessageId] = useState(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [encryptionError, setEncryptionError] = useState(null)
+  const [isRetryingEncryption, setIsRetryingEncryption] = useState(false)
+  const [showWidgetEditor, setShowWidgetEditor] = useState(false)
+  const [widgets, setWidgets] = useState([])
+  const [selectedWidgetId, setSelectedWidgetId] = useState(null)
+  const [replyingTo, setReplyingTo] = useState(null)
   const isSendingRef = useRef(false)
   const typingTimeoutRef = useRef(null)
   const emojiPickerRef = useRef(null)
@@ -58,27 +80,39 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
   const inputRef = useRef(null)
   const fileInputRef = useRef(null)
   const chatAreaRef = useRef(null)
-  const currentChannel = channels?.find(c => c.id === channelId)
+  const safeChannels = Array.isArray(channels) ? channels : channels && typeof channels === 'object' ? Object.values(channels) : []
+  const currentChannel = safeChannels.find(c => c.id === channelId)
+
+  useEffect(() => {
+    setWidgets(loadWidgets())
+    return subscribeWidgets(setWidgets)
+  }, [])
 
   // Load members for mention suggestions
   useEffect(() => {
-    if (serverId) {
-      apiService.getServerMembers(serverId)
-        .then(res => {
-          const loaded = res.data || []
-          setMembers(loaded)
-          // Warm host metadata cache for any federated members
-          const hosts = loaded.filter(m => !m.isBot && m.host).map(m => m.host)
-          if (hosts.length > 0) preloadHostMetadata(hosts)
-        })
-        .catch(err => {
-          console.error('[ChatArea] Failed to load members:', err)
-          setMembers([])
-        })
-    } else {
-      setMembers([])
+    if (Array.isArray(initialMembers) && initialMembers.length > 0) {
+      setMembers(initialMembers)
+      const hosts = initialMembers.filter(m => !m.isBot && m.host).map(m => m.host)
+      if (hosts.length > 0) preloadHostMetadata(hosts)
+      return
     }
-  }, [serverId])
+
+    setMembers([])
+  }, [serverId, initialMembers])
+
+  useEffect(() => {
+    warmupSafetyModels({ text: true, images: false })
+  }, [])
+
+  // Load server info for admin features
+  useEffect(() => {
+    if (initialServer?.id === serverId) {
+      setServer(initialServer)
+      return
+    }
+
+    setServer(null)
+  }, [serverId, initialServer])
 
   // Close emoji picker and mention panel when clicking outside
   useEffect(() => {
@@ -142,6 +176,22 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
     loadServerEmojis()
   }, [serverId])
 
+  // Trigger initial message load when component mounts and no messages are loaded yet
+  const [hasTriggeredInitialLoad, setHasTriggeredInitialLoad] = useState(false)
+  
+  useEffect(() => {
+    setHasTriggeredInitialLoad(false)
+  }, [channelId])
+
+  useEffect(() => {
+    if (channelId && onLoadMoreMessages && !hasTriggeredInitialLoad) {
+      console.log('[ChatArea] Triggering initial message load for channel:', channelId)
+      // Call onLoadMoreMessages with no timestamp to load the most recent messages
+      onLoadMoreMessages(null)
+      setHasTriggeredInitialLoad(true)
+    }
+  }, [channelId, onLoadMoreMessages, hasTriggeredInitialLoad])
+
   useEffect(() => {
     if (!socket || !connected) return
 
@@ -162,11 +212,16 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
 
     const handleMessageError = (payload) => {
       if (payload?.channelId === channelId) {
+        if (payload?.clientNonce) {
+          onMessageFailed?.(payload.clientNonce, payload?.error || 'Failed to send message')
+        }
         if (payload.code === 'AGE_VERIFICATION_REQUIRED') {
           setSendError(t('ageVerification.channelAccess', 'Access to #{{channel}} requires age verification.', { channel: currentChannel?.name || t('chat.channelName', 'this channel') }))
           onAgeGateTriggered?.()
         } else if (payload.code === 'SLOWMODE') {
           setSendError(payload.error || t('chat.slowmodeActive', 'Slowmode is active. Please wait before sending another message.'))
+        } else {
+          setSendError(payload?.error || t('chat.sendFailed', 'Failed to send message'))
         }
       }
     }
@@ -177,7 +232,7 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
       socket.off('user:typing', handleTyping)
       socket.off('message:error', handleMessageError)
     }
-  }, [socket, connected, channelId, user, onAgeGateTriggered, t, currentChannel?.name])
+  }, [socket, connected, channelId, user, onAgeGateTriggered, onMessageFailed, t, currentChannel?.name])
 
   useEffect(() => {
     setSendError('')
@@ -198,22 +253,70 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
     isSendingRef.current = true
     
     let messageContent = inputValue.trim()
+    const displayContent = messageContent
     let encryptedData = null
-    
-    // Try True E2EE first, then fall back to legacy
-    if (serverId && e2eTrue) {
+
+    // Local-only safety moderation before encryption/send.
+    // We never transmit content or scores, only boolean flags when a threat is escalated.
+    try {
+      const { flags, safety } = await runSafetyScan({
+        text: messageContent,
+        attachments,
+        recipient: { isMinor: false, isUnder16: false },
+        allowBlockingModels: false
+      })
+
+      if (safety.shouldBlock) {
+        setSendError(t('chat.automodBlocked', 'Message blocked by local safety policy.'))
+        if (safety.shouldReport) {
+          const reportPayload = {
+            contextType: 'channel',
+            reportType: 'threat',
+            accusedUserId: user?.id || null,
+            targetUserId: null,
+            channelId,
+            contentFlags: flags
+          }
+          const signature = await buildClientSignature(reportPayload)
+          await apiService.submitSafetyReport({
+            ...reportPayload,
+            clientSignature: signature
+          }).catch(() => {})
+        }
+        isSendingRef.current = false
+        return
+      }
+    } catch (err) {
+      console.error('[ChatArea] Local safety moderation failed:', err)
+    }
+
+    // Security hardening: when encryption is enabled for a server, require
+    // True E2EE and do not silently fall back to legacy server-readable mode.
+    const trueE2eeRequired = serverId && e2eTrue
+      ? await e2eTrue.isEncryptionEnabled(serverId)
+      : false
+
+    if (serverId && e2eTrue && trueE2eeRequired) {
       try {
         const trueEncrypted = await e2eTrue.encryptMessage(messageContent, serverId)
         if (trueEncrypted.encrypted) {
           encryptedData = trueEncrypted
           messageContent = trueEncrypted.content
+        } else {
+          setEncryptionError('encryption_failed')
+          isSendingRef.current = false
+          return
         }
       } catch (err) {
         console.error('[ChatArea] True E2EE encryption error:', err)
+        setEncryptionError('encryption_failed')
+        isSendingRef.current = false
+        return
       }
     }
     
-    if (!encryptedData?.encrypted && serverId && isEncryptionEnabled(serverId) && hasDecryptedKey(serverId)) {
+    // Legacy fallback is only used when True E2EE is not required/enabled.
+    if (!trueE2eeRequired && !encryptedData?.encrypted && serverId && hasDecryptedKey(serverId) && isEncryptionEnabled(serverId)) {
       try {
         encryptedData = await encryptMessageForServer(messageContent, serverId)
         if (encryptedData.encrypted) {
@@ -225,32 +328,63 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
         }
       } catch (err) {
         console.error('[ChatArea] Legacy encryption error:', err)
+        setEncryptionError('encryption_failed')
       }
     }
     
+    const clientNonce = `chn_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
     const messageData = {
       channelId,
       content: messageContent,
+      replyTo: replyingTo?.id,
       attachments: attachments.length > 0 ? attachments : undefined,
       encrypted: encryptedData?.encrypted || false,
       iv: encryptedData?.iv,
-      epoch: encryptedData?.epoch || null
+      epoch: encryptedData?.epoch || null,
+      keyVersion: encryptedData?.keyVersion || null,
+      clientNonce
     }
 
+    onMessageSent?.({
+      id: `local_${clientNonce}`,
+      channelId,
+      userId: user?.id,
+      username: user?.username || user?.email || 'You',
+      avatar: user?.avatar,
+      content: displayContent,
+      mentions: null,
+      timestamp: new Date().toISOString(),
+      attachments: attachments.length > 0 ? attachments : [],
+      replyTo: replyingTo || null,
+      encrypted: encryptedData?.encrypted || false,
+      iv: encryptedData?.iv || null,
+      epoch: encryptedData?.epoch || null,
+      keyVersion: encryptedData?.keyVersion || null,
+      clientNonce,
+      _sendStatus: 'sending'
+    })
+
     console.log('[ChatArea] Sending message:', messageData)
-    socket.emit('message:send', messageData)
+    
+    // Send with acknowledgment for immediate feedback
+    socket.emit('message:send', messageData, (ack) => {
+      if (ack && ack.success) {
+        console.log('[ChatArea] Message acknowledged:', ack.messageId)
+        onMessageAck?.(channelId, clientNonce, ack.messageId)
+      }
+    })
+    
     soundService.messageSent()
     setInputValue('')
+    inputRef.current?.setValueAndCaret?.('', 0)
     setAttachments([])
     setPendingPreviews([])
+    setReplyingTo(null)
     setIsTyping(false)
     setShowMentionSuggestions(false)
     setShowEmojiPicker(false)
     
-    // Reset sending flag after a short delay
-    setTimeout(() => {
-      isSendingRef.current = false
-    }, 500)
+    isSendingRef.current = false
   }
 
   // Called by ChatInput with a plain string (the current innerText)
@@ -270,8 +404,8 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
       
       // Special mentions always shown, filter members by query
       const specials = [
-        { id: 'everyone', username: 'everyone', displayName: '@everyone — notify all members', type: 'special', color: '#fbbf24' },
-        { id: 'here', username: 'here', displayName: '@here — notify online members', type: 'special', color: '#60a5fa' },
+        { id: 'everyone', username: 'everyone', displayName: '@everyone — notify all members', type: 'special', color: 'var(--volt-warning)' },
+        { id: 'here', username: 'here', displayName: '@here — notify online members', type: 'special', color: 'var(--volt-primary-light)' },
       ].filter(s => !query || s.username.startsWith(query))
 
       const memberMatches = members.filter(m => 
@@ -296,6 +430,22 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false)
     }, 2000)
+  }
+
+  // Auto-send typing indicator when input is focused (unless in full voice mode)
+  const handleInputFocus = () => {
+    const voiceContainer = document.querySelector('.voice-container')
+    const isVoiceFullMode = voiceContainer?.classList.contains('full')
+    
+    if (!isVoiceFullMode && !isTyping) {
+      setIsTyping(true)
+      socket?.emit('message:typing', { channelId })
+      
+      clearTimeout(typingTimeoutRef.current)
+      typingTimeoutRef.current = setTimeout(() => {
+        setIsTyping(false)
+      }, 2000)
+    }
   }
 
   const handleMentionSelect = (mention) => {
@@ -366,6 +516,43 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
     // For Shift+Enter, do nothing - let the browser handle the newline insertion
   }
 
+  const handleVoiceMessageSent = useCallback((attachment) => {
+    if (!socket || !attachment || !channelId) return
+
+    const clientNonce = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+    const messageData = {
+      channelId,
+      content: '',
+      attachments: [attachment],
+      clientNonce
+    }
+
+    const optimisticMessage = {
+      id: `local_${clientNonce}`,
+      channelId,
+      serverId,
+      userId: user?.id,
+      username: user?.username || user?.email || 'You',
+      avatar: user?.avatar,
+      content: '',
+      mentions: null,
+      timestamp: new Date().toISOString(),
+      attachments: [attachment],
+      clientNonce,
+      _sendStatus: 'sending'
+    }
+
+    onMessageSent?.(channelId, optimisticMessage)
+
+    socket.emit('message:send', messageData, (ack) => {
+      if (ack && ack.success) {
+        onMessageAck?.(channelId, clientNonce, ack.messageId)
+      }
+    })
+    
+    soundService.messageSent()
+  }, [socket, channelId, serverId, user, onMessageSent, onMessageAck])
+
   const handleEmojiSelect = (emoji) => {
     const insertAtCaret = (textToInsert) => {
       const editor = inputRef.current
@@ -418,6 +605,7 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
     })
     
     if (validFiles.length === 0) return
+    warmupSafetyModels({ text: false, images: true })
 
     // Generate local previews immediately (before upload)
     const previews = validFiles.map(file => ({
@@ -433,12 +621,21 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
     setUploadProgress(0)
 
     try {
+      const localNsfwResults = await scanSelectedImageFiles(validFiles)
       const result = await apiService.uploadFiles(validFiles, serverId, (pct) => {
         setUploadProgress(Math.round(pct))
       })
       // uploadFiles with onProgress returns raw JSON; without returns axios response
       const uploaded = result?.attachments ?? result?.data?.attachments ?? []
-      setAttachments(prev => [...prev, ...uploaded])
+      const uploadedWithFlags = uploaded.map((attachment, index) => {
+        const scan = localNsfwResults[index]
+        if (!scan) return attachment
+        return {
+          ...attachment,
+          contentFlags: buildTransmitContentFlags(scan)
+        }
+      })
+      setAttachments(prev => [...prev, ...uploadedWithFlags])
       // Revoke object URLs to free memory
       previews.forEach(p => { if (p.localUrl) URL.revokeObjectURL(p.localUrl) })
       setPendingPreviews(prev => prev.filter(p => !previews.includes(p)))
@@ -527,6 +724,27 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
     setShowEmojiPicker(!showEmojiPicker)
   }
 
+  const toggleKlipyPicker = () => {
+    setShowKlipyPicker(!showKlipyPicker)
+  }
+
+  const handleKlipySelect = (item) => {
+    const insertAtCaret = (textToInsert) => {
+      const editor = inputRef.current
+      const editorText = editor?.getEditor?.()?.innerText ?? inputValue
+      const caret = editor?.getCaretPosition?.() ?? editorText.length
+      const next = `${editorText.slice(0, caret)}${textToInsert}${editorText.slice(caret)}`
+      editor?.setValueAndCaret?.(next, caret + textToInsert.length)
+      setInputValue(next)
+    }
+
+    if (item.url) {
+      insertAtCaret(`[${item.type.toUpperCase()}: ${item.url}]`)
+    }
+    setShowKlipyPicker(false)
+    requestAnimationFrame(() => inputRef.current?.focus?.())
+  }
+
   const handleSearch = async (e) => {
     e.preventDefault()
     if (!searchQuery.trim() || !channelId) return
@@ -587,38 +805,182 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
     }
   }
 
+  const beginWidgetMove = useCallback((widgetId, event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setSelectedWidgetId(widgetId)
+    const startX = event.clientX
+    const startY = event.clientY
+    const targetWidget = widgets.find((widget) => widget.id === widgetId)
+    if (!targetWidget) return
+    const startLeft = targetWidget.x || 16
+    const startTop = targetWidget.y || 16
+
+    const onMove = (moveEvent) => {
+      saveWidgets(widgets.map((widget) => widget.id === widgetId ? {
+        ...widget,
+        x: Math.max(0, startLeft + (moveEvent.clientX - startX)),
+        y: Math.max(0, startTop + (moveEvent.clientY - startY))
+      } : widget))
+    }
+
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [widgets])
+
+  const beginWidgetResize = useCallback((widgetId, event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setSelectedWidgetId(widgetId)
+    const startX = event.clientX
+    const startY = event.clientY
+    const targetWidget = widgets.find((widget) => widget.id === widgetId)
+    if (!targetWidget) return
+    const startWidth = targetWidget.width || 280
+    const startHeight = targetWidget.height || 160
+
+    const onMove = (moveEvent) => {
+      saveWidgets(widgets.map((widget) => widget.id === widgetId ? {
+        ...widget,
+        width: Math.min(640, Math.max(140, startWidth + (moveEvent.clientX - startX))),
+        height: Math.min(420, Math.max(90, startHeight + (moveEvent.clientY - startY)))
+      } : widget))
+    }
+
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [widgets])
+
+  const removeWidget = useCallback((widgetId) => {
+    saveWidgets(widgets.filter((widget) => widget.id !== widgetId))
+    setSelectedWidgetId((current) => current === widgetId ? null : current)
+  }, [widgets])
+
+  const handleReportMessage = async (message) => {
+    if (!message?.id) return
+    const reason = window.prompt('Report this message. What happened?')
+    if (!reason || reason.trim().length < 3) return
+
+    try {
+      await apiService.submitUserSafetyReport({
+        contextType: 'server_message',
+        reportType: 'user_report',
+        accusedUserId: message.userId || null,
+        channelId,
+        serverId: serverId || null,
+        messageId: message.id,
+        messagePreview: (message.content || '').slice(0, 240),
+        reason: reason.trim()
+      })
+      window.alert('Report sent. Thanks for helping moderate the community.')
+    } catch (err) {
+      console.error('Failed to submit message report:', err)
+      window.alert(err?.response?.data?.error || 'Failed to submit report')
+    }
+  }
+
   const handleLoadMoreMessages = async (beforeTimestamp) => {
     if (!channelId || !onLoadMoreMessages) return false
-    
-    try {
-      const res = await apiService.getMessages(channelId, { limit: 50, before: beforeTimestamp })
-      if (res.data && res.data.length > 0) {
-        onLoadMoreMessages(res.data)
-        return res.data.length >= 50
-      }
-      return false
-    } catch (err) {
-      console.error('Failed to load more messages:', err)
-      return false
-    }
+    return onLoadMoreMessages(beforeTimestamp)
   }
 
   return (
     <div 
       className={`chat-area ${isDragging ? 'dragging' : ''}`}
+      ref={chatAreaRef}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      onMouseDown={() => setSelectedWidgetId(null)}
     >
       {isDragging && (
         <div className="drop-overlay">
           <div className="drop-message">
-            <FileText size={48} />
+            <DocumentTextIcon size={48} />
             <span>{t('chat.dropFilesUpload', 'Drop files to upload')}</span>
           </div>
         </div>
       )}
       <div className="chat-area-main">
+        {widgets.map((widget) => (
+          (widget.type === 'image' || widget.type === 'gif') && widget.src ? (
+            <div
+              key={widget.id}
+              className={`chat-widget chat-widget-image ${selectedWidgetId === widget.id ? 'selected' : ''}`}
+              style={{
+                width: `${widget.width}px`,
+                height: `${widget.height}px`,
+                left: `${widget.x}px`,
+                top: `${widget.y}px`
+              }}
+              onMouseDown={(event) => {
+                if (event.target.closest('button')) return
+                beginWidgetMove(widget.id, event)
+              }}
+              onClick={(event) => {
+                event.stopPropagation()
+                setSelectedWidgetId(widget.id)
+              }}
+            >
+              <button type="button" className="chat-widget-grab" onMouseDown={(event) => beginWidgetMove(widget.id, event)} title={t('chat.moveWidget', 'Move widget')}>
+                <Grip size={14} />
+              </button>
+              <button type="button" className="chat-widget-close" onClick={() => removeWidget(widget.id)} title={t('chat.removeWidget', 'Remove widget')}>
+                <X size={14} />
+              </button>
+              <img src={widget.src} alt={widget.title || t('chat.widget', 'Widget')} />
+              <div className="chat-widget-label">{widget.title || t('chat.widget', 'Widget')}</div>
+              <button type="button" className="chat-widget-resize" onMouseDown={(event) => beginWidgetResize(widget.id, event)} title={t('chat.resizeWidget', 'Resize widget')}>
+                <Grip size={14} />
+              </button>
+            </div>
+          ) : widget.type === 'text' && widget.content ? (
+            <div
+              key={widget.id}
+              className={`chat-widget chat-widget-text ${selectedWidgetId === widget.id ? 'selected' : ''}`}
+              style={{
+                width: `${widget.width}px`,
+                height: `${widget.height}px`,
+                left: `${widget.x}px`,
+                top: `${widget.y}px`,
+                color: widget.color || '#ffffff',
+                background: widget.background || 'rgba(10, 10, 14, 0.72)'
+              }}
+              onMouseDown={(event) => {
+                if (event.target.closest('button')) return
+                beginWidgetMove(widget.id, event)
+              }}
+              onClick={(event) => {
+                event.stopPropagation()
+                setSelectedWidgetId(widget.id)
+              }}
+            >
+              <button type="button" className="chat-widget-grab" onMouseDown={(event) => beginWidgetMove(widget.id, event)} title={t('chat.moveWidget', 'Move widget')}>
+                <Grip size={14} />
+              </button>
+              <button type="button" className="chat-widget-close" onClick={() => removeWidget(widget.id)} title={t('chat.removeWidget', 'Remove widget')}>
+                <X size={14} />
+              </button>
+              <div className="chat-widget-text-copy">
+                <strong>{widget.title || t('chat.widget', 'Widget')}</strong>
+                <span>{widget.content}</span>
+              </div>
+              <button type="button" className="chat-widget-resize" onMouseDown={(event) => beginWidgetResize(widget.id, event)} title={t('chat.resizeWidget', 'Resize widget')}>
+                <Grip size={14} />
+              </button>
+            </div>
+          ) : null
+        ))}
         <div className="chat-header">
         <div className="channel-info">
           <Hash size={24} />
@@ -626,31 +988,47 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
         </div>
         <div className="chat-actions">
           <button className="icon-btn" title={t('misc.showMembers', 'Show Members')} onClick={onToggleMembers}>
-            <Users size={20} />
+            <UsersIcon size={20} />
           </button>
           <div className="divider-vertical"></div>
           <button className="icon-btn" title={t('misc.pinnedMessages', 'Pinned Messages')} onClick={() => { handleLoadPinned(); setShowPinnedModal(true) }}>
-            <Pin size={20} />
+            <MapPinIcon size={20} />
           </button>
           <button className="icon-btn" title={t('common.search', 'Search')} onClick={() => setShowSearchModal(true)}>
-            <Search size={20} />
+            <MagnifyingGlassIcon size={20} />
+          </button>
+          <button className="icon-btn" title={t('chat.widgets', 'Widgets')} onClick={() => setShowWidgetEditor((prev) => !prev)}>
+            <LayoutGrid size={18} />
           </button>
         </div>
       </div>
 
+      {showWidgetEditor && (
+        <div className="chat-widget-editor">
+          <WidgetManager showClose onClose={() => setShowWidgetEditor(false)} />
+        </div>
+      )}
+
       <MessageList 
         messages={messages || []} 
+        emptyState={channelDiagnostic}
         currentUserId={user?.id} 
         channelId={channelId} 
+        onReply={setReplyingTo}
         onLoadMore={handleLoadMoreMessages}
         onPinMessage={handlePinMessage}
         onUnpinMessage={handleUnpinMessage}
+        onReportMessage={handleReportMessage}
         highlightMessageId={highlightMessageId}
         onSaveScrollPosition={onSaveScrollPosition}
         scrollPosition={scrollPosition}
         onShowProfile={onShowProfile}
         members={members}
         serverEmojis={serverEmojis}
+        serverId={serverId}
+        isAdmin={isAdmin}
+        server={server}
+        isLoading={isLoading}
       />
 
       {typingUsers.size > 0 && (
@@ -673,6 +1051,27 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
       )}
 
       <div className="message-input-container">
+        {replyingTo && (
+          <div className="reply-preview-bar">
+            <ArrowUturnLeftIcon size={16} className="reply-icon" />
+            <div className="reply-content">
+              <span className="reply-author">{replyingTo.username}</span>
+              <span className="reply-text">
+                {replyingTo.content?.slice(0, 120) || 'Attachment'}
+                {(replyingTo.content?.length || 0) > 120 ? '…' : ''}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="reply-cancel"
+              onClick={() => setReplyingTo(null)}
+              title={t('common.cancel', 'Cancel')}
+            >
+              <XMarkIcon size={16} />
+            </button>
+          </div>
+        )}
+
         {/* Upload progress bar */}
         {uploadProgress !== null && (
           <div className="upload-progress-bar-container">
@@ -708,7 +1107,7 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
                 )}
                 <div className="attachment-meta">
                   <span className="attachment-name">{preview.name}</span>
-                  <span className="attachment-size">{(preview.size / 1024).toFixed(1)} KB</span>
+                  <span className="attachment-size">{preview.size > 0 ? (preview.size < 1024 * 1024 ? (preview.size / 1024).toFixed(1) + ' KB' : (preview.size / (1024 * 1024)).toFixed(1) + ' MB') : ''}</span>
                 </div>
                 <div className="attachment-uploading-spinner" />
               </div>
@@ -740,19 +1139,19 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
                     <div className="attachment-type-icon attachment-type-code">&lt;/&gt;</div>
                   ) : (
                     <div className="attachment-type-icon attachment-type-file">
-                      <FileText size={18} />
+                      <DocumentTextIcon size={18} />
                     </div>
                   )}
                   <div className="attachment-meta">
                     <span className="attachment-name">{file.name}</span>
-                    {file.size && <span className="attachment-size">{(file.size / 1024).toFixed(1)} KB</span>}
+                    {file.size > 0 && <span className="attachment-size">{file.size < 1024 * 1024 ? (file.size / 1024).toFixed(1) + ' KB' : (file.size / (1024 * 1024)).toFixed(1) + ' MB'}</span>}
                   </div>
                   <button 
                     type="button" 
                     className="attachment-remove"
                     onClick={() => removeAttachment(index)}
                   >
-                    <X size={14} />
+                    <XMarkIcon size={14} />
                   </button>
                 </div>
               )
@@ -793,8 +1192,8 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
                         style={{ '--mention-color': mention.color }}
                       >
                         {mention.username === 'everyone'
-                          ? <Users size={16} />
-                          : <Radio size={16} />}
+                          ? <UsersIcon size={16} />
+                          : <Signal size={16} />}
                       </div>
                     ) : (
                       <div
@@ -830,14 +1229,36 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
             ref={inputRef}
             value={inputValue}
             onChange={handleInputChange}
+            onFocus={handleInputFocus}
             placeholder={t('chat.messageChannel', { channel: currentChannel?.name || 'channel' })}
             onSubmit={handleSendMessage}
             onKeyDown={handleKeyDown}
             onAttachClick={handlePlusClick}
             onEmojiClick={toggleEmojiPicker}
+            onKlipyClick={toggleKlipyPicker}
+            onVoiceMessageSent={handleVoiceMessageSent}
             customEmojis={serverEmojis}
           />
-          
+
+          {encryptionError && (
+            <EncryptionFallback
+              status={encryptionError}
+              onRetry={async () => {
+                setIsRetryingEncryption(true)
+                try {
+                  await getServerEncryptionStatus(serverId)
+                  setEncryptionError(null)
+                } catch (err) {
+                  console.error('[ChatArea] Retry failed:', err)
+                } finally {
+                  setIsRetryingEncryption(false)
+                }
+              }}
+              isRetrying={isRetryingEncryption}
+              showDetails={true}
+            />
+          )}
+
           {showEmojiPicker && (
             <div ref={emojiPickerRef} className="emoji-picker-popover">
               <EmojiPicker 
@@ -847,8 +1268,16 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
               />
             </div>
           )}
+
         </div>
       </div>
+
+      {showKlipyPicker && (
+        <KlipyPicker 
+          onSelect={handleKlipySelect}
+          onClose={() => setShowKlipyPicker(false)}
+        />
+      )}
 
       {showSearchModal && (
         <div className="modal-overlay" onClick={() => setShowSearchModal(false)}>
@@ -856,7 +1285,7 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
             <div className="modal-header">
               <h3>{t('search.searchMessagesTitle', 'Search Messages')}</h3>
               <button className="modal-close" onClick={() => setShowSearchModal(false)}>
-                <X size={20} />
+                <XMarkIcon size={20} />
               </button>
             </div>
             <form onSubmit={handleSearch} className="search-form">
@@ -868,7 +1297,7 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
                 autoFocus
               />
               <button type="submit" disabled={isSearching}>
-                <Search size={18} />
+                <MagnifyingGlassIcon size={18} />
               </button>
             </form>
             <div className="search-results">
@@ -911,7 +1340,7 @@ const ChatArea = ({ channelId, serverId, channels, messages, onMessageSent, onAg
             <div className="modal-header">
               <h3>{t('misc.pinnedMessages', 'Pinned Messages')}</h3>
               <button className="modal-close" onClick={() => setShowPinnedModal(false)}>
-                <X size={20} />
+                <XMarkIcon size={20} />
               </button>
             </div>
             <div className="pinned-messages-list">

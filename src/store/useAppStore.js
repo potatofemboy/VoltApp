@@ -7,6 +7,10 @@ export const useAppStore = create((set, get) => ({
   channels: [],
   categories: [],
   currentChannel: null,
+  selfPresence: {
+    status: 'online',
+    customStatus: ''
+  },
   messages: [],
   friends: [],
   dms: [],
@@ -15,6 +19,9 @@ export const useAppStore = create((set, get) => ({
   mainServers: getMainServers(),
   currentMainServer: getStoredServer(),
   globalEmojis: [],
+  // Activity state - tracks active activity sessions
+  activeActivities: [], // Array of { id, sessionId, activityId, activityName, contextType, contextId }
+  focusedActivityId: null, // The currently focused/interacted activity
   settings: {
     theme: 'dark',
     notifications: true,
@@ -30,6 +37,12 @@ export const useAppStore = create((set, get) => ({
   setChannels: (channels) => set({ channels }),
   setCategories: (categories) => set({ categories }),
   setCurrentChannel: (channel) => set({ currentChannel: channel }),
+  setSelfPresence: (presence) => set((state) => ({
+    selfPresence: {
+      ...state.selfPresence,
+      ...(presence || {})
+    }
+  })),
   setMessages: (messages) => set({ messages }),
   addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
   setFriends: (friends) => set({ friends }),
@@ -76,4 +89,27 @@ export const useAppStore = create((set, get) => ({
   removeGlobalEmoji: (emojiId, serverId) => set((state) => ({ 
     globalEmojis: state.globalEmojis.filter(e => !(e.id === emojiId && e.serverId === serverId))
   })),
+  
+  // Activity management
+  setActiveActivities: (activities) => set({ activeActivities: activities }),
+  addActivity: (activity) => set((state) => {
+    // Prevent duplicates - check if activity with same sessionId already exists
+    const exists = state.activeActivities.find(a => a.sessionId === activity.sessionId)
+    if (exists) {
+      return state // No change if already exists
+    }
+    return { 
+      activeActivities: [...state.activeActivities, activity] 
+    }
+  }),
+  removeActivity: (sessionId) => set((state) => ({ 
+    activeActivities: state.activeActivities.filter(a => a.sessionId !== sessionId),
+    // Clear focus if the focused activity was removed
+    focusedActivityId: state.focusedActivityId === sessionId ? null : state.focusedActivityId
+  })),
+  setFocusedActivity: (sessionId) => set({ focusedActivityId: sessionId }),
+  clearFocusedActivity: () => set({ focusedActivityId: null }),
 }))
+
+// Export clearFocusedActivity as a named export for convenience
+export const clearFocusedActivity = () => useAppStore.getState().clearFocusedActivity()

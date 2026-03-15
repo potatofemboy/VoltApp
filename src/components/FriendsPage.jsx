@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react'
-import { UserPlus, MessageSquare, Check, X, MoreVertical, UserMinus, Ban, Copy } from 'lucide-react'
+import { UserPlusIcon, ChatBubbleLeftRightIcon, CheckIcon, XMarkIcon, EllipsisVerticalIcon, UserMinusIcon, NoSymbolIcon, ClipboardDocumentIcon } from '@heroicons/react/24/outline'
 import { useTranslation } from '../hooks/useTranslation'
 import { apiService } from '../services/apiService'
-import { getStoredServer } from '../services/serverConfig'
 import { useSocket } from '../contexts/SocketContext'
 import Avatar from './Avatar'
 import ContextMenu from './ContextMenu'
@@ -21,10 +20,6 @@ const FriendsPage = ({ onStartDM }) => {
   const [contextMenu, setContextMenu] = useState(null)
   const { socket, connected } = useSocket()
   
-  const server = getStoredServer()
-  const apiUrl = server?.apiUrl || ''
-  const imageApiUrl = server?.imageApiUrl || apiUrl
-
   useEffect(() => {
     loadFriends()
     loadRequests()
@@ -263,19 +258,19 @@ const FriendsPage = ({ onStartDM }) => {
                         e.preventDefault()
                         const items = [
                           {
-                            icon: <Check size={16} />,
+                            icon: <CheckIcon size={16} />,
                             label: t('friends.accept'),
                             onClick: () => handleAcceptRequest(request.id)
                           },
                           {
-                            icon: <X size={16} />,
+                            icon: <XMarkIcon size={16} />,
                             label: t('friends.decline'),
                             onClick: () => handleRejectRequest(request.id),
                             danger: true
                           },
                           { type: 'separator' },
                           {
-                            icon: <Copy size={16} />,
+                            icon: <ClipboardDocumentIcon size={16} />,
                             label: t('account.userId'),
                             onClick: () => navigator.clipboard.writeText(request.from)
                           },
@@ -284,9 +279,10 @@ const FriendsPage = ({ onStartDM }) => {
                       }}
                     >
                       <Avatar 
-                        src={`${imageApiUrl}/api/images/users/${request.from}/profile`}
-                        fallback={request.fromUsername}
+                        src={request.fromAvatar || request.fromImageUrl || null}
+                        fallback={request.fromUsername || '?'}
                         size={40}
+                        userId={request.from}
                       />
                       <div className="friend-info">
                         <span className="friend-name">{request.fromUsername}</span>
@@ -298,14 +294,14 @@ const FriendsPage = ({ onStartDM }) => {
                           onClick={() => handleAcceptRequest(request.id)}
                           title={t('friends.accept')}
                         >
-                          <Check size={20} />
+                          <CheckIcon size={20} />
                         </button>
                         <button 
                           className="icon-btn reject"
                           onClick={() => handleRejectRequest(request.id)}
                           title={t('friends.decline')}
                         >
-                          <X size={20} />
+                          <XMarkIcon size={20} />
                         </button>
                       </div>
                     </div>
@@ -326,14 +322,14 @@ const FriendsPage = ({ onStartDM }) => {
                         e.preventDefault()
                         const items = [
                           {
-                            icon: <X size={16} />,
+                            icon: <XMarkIcon size={16} />,
                             label: t('friends.cancel'),
                             onClick: () => handleCancelRequest(request.id),
                             danger: true
                           },
                           { type: 'separator' },
                           {
-                            icon: <Copy size={16} />,
+                            icon: <ClipboardDocumentIcon size={16} />,
                             label: t('account.userId'),
                             onClick: () => navigator.clipboard.writeText(request.to)
                           },
@@ -342,9 +338,10 @@ const FriendsPage = ({ onStartDM }) => {
                       }}
                     >
                       <Avatar 
-                        src={`${imageApiUrl}/api/images/users/${request.to}/profile`}
+                        src={request.toAvatar || request.toImageUrl || null}
                         fallback={request.toUsername || '?'}
                         size={40}
+                        userId={request.to}
                       />
                       <div className="friend-info">
                         <span className="friend-name">{request.toUsername || t('common.user', 'User')}</span>
@@ -356,7 +353,7 @@ const FriendsPage = ({ onStartDM }) => {
                           onClick={() => handleCancelRequest(request.id)}
                           title={t('friends.cancel')}
                         >
-                          <X size={20} />
+                          <XMarkIcon size={20} />
                         </button>
                       </div>
                     </div>
@@ -392,13 +389,13 @@ const FriendsPage = ({ onStartDM }) => {
                       e.preventDefault()
                       const items = [
                         {
-                          icon: <X size={16} />,
+                          icon: <XMarkIcon size={16} />,
                           label: t('friends.unblock'),
                           onClick: () => handleUnblock(user.id)
                         },
                         { type: 'separator' },
                         {
-                          icon: <Copy size={16} />,
+                          icon: <ClipboardDocumentIcon size={16} />,
                           label: t('account.userId'),
                           onClick: () => navigator.clipboard.writeText(user.id)
                         },
@@ -407,9 +404,10 @@ const FriendsPage = ({ onStartDM }) => {
                     }}
                   >
                     <Avatar 
-                      src={user.avatar || `${imageApiUrl}/api/images/users/${user.id}/profile`}
+                      src={user.avatar}
                       fallback={user.username}
-                      size={40}
+                      size={32}
+                      userId={user.id}
                     />
                     <div className="friend-info">
                       <span className="friend-name">{user.username}</span>
@@ -421,7 +419,7 @@ const FriendsPage = ({ onStartDM }) => {
                         onClick={() => handleUnblock(user.id)}
                         title={t('friends.unblock', 'Unblock')}
                       >
-                        <X size={20} />
+                        <XMarkIcon size={20} />
                       </button>
                     </div>
                   </div>
@@ -453,26 +451,26 @@ const FriendsPage = ({ onStartDM }) => {
                       e.preventDefault()
                       const items = [
                           {
-                            icon: <MessageSquare size={16} />,
+                            icon: <ChatBubbleLeftRightIcon size={16} />,
                             label: t('member.message', 'Message'),
                             shortcut: 'M',
                             onClick: () => handleMessageFriend(friend.id)
                           },
                           {
-                            icon: <Ban size={16} />,
+                            icon: <NoSymbolIcon size={16} />,
                             label: t('friends.block', 'Block'),
                             onClick: () => handleBlockFriend(friend.id),
                             danger: true
                           },
                           {
-                            icon: <UserMinus size={16} />,
+                            icon: <UserMinusIcon size={16} />,
                             label: t('friends.unfriend', 'Remove Friend'),
                             onClick: () => handleRemoveFriend(friend.id),
                             danger: true
                           },
                           { type: 'separator' },
                           {
-                            icon: <Copy size={16} />,
+                            icon: <ClipboardDocumentIcon size={16} />,
                             label: t('account.userId', 'Copy User ID'),
                             onClick: () => navigator.clipboard.writeText(friend.id)
                           },
@@ -485,6 +483,7 @@ const FriendsPage = ({ onStartDM }) => {
                         src={friend.avatar}
                         fallback={friend.username}
                         size={40}
+                        userId={friend.id}
                       />
                       <div 
                         className="status-dot" 
@@ -503,21 +502,21 @@ const FriendsPage = ({ onStartDM }) => {
                         onClick={() => handleMessageFriend(friend.id)}
                         title={t('member.message', 'Message')}
                       >
-                        <MessageSquare size={20} />
+                        <ChatBubbleLeftRightIcon size={20} />
                       </button>
                       <button 
                         className="icon-btn danger"
                         onClick={() => handleBlockFriend(friend.id)}
                         title={t('friends.block', 'Block User')}
                       >
-                        <Ban size={20} />
+                        <NoSymbolIcon size={20} />
                       </button>
                       <button 
                         className="icon-btn danger"
                         onClick={() => handleRemoveFriend(friend.id)}
                         title={t('friends.unfriend', 'Remove Friend')}
                       >
-                        <UserMinus size={20} />
+                        <UserMinusIcon size={20} />
                       </button>
                     </div>
                   </div>

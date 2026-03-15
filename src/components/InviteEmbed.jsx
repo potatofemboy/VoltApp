@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react'
-import { Users, Loader2, X, Globe } from 'lucide-react'
+import { UsersIcon, ArrowPathIcon, XMarkIcon, GlobeAltIcon } from '@heroicons/react/24/outline'
 import { useTranslation } from '../hooks/useTranslation'
 import { apiService } from '../services/apiService'
 import { soundService } from '../services/soundService'
 import { getStoredServer } from '../services/serverConfig'
 import '../assets/styles/InviteEmbed.css'
+
+const inviteCache = new Map()
+const INVITE_CACHE_MS = 60 * 1000
 
 const InviteEmbed = ({ inviteCode, inviteUrl }) => {
   const { t } = useTranslation()
@@ -20,10 +23,24 @@ const InviteEmbed = ({ inviteCode, inviteUrl }) => {
 
   useEffect(() => {
     let cancelled = false
+
+    const cached = inviteCache.get(inviteCode)
+    if (cached && Date.now() - cached.ts < INVITE_CACHE_MS) {
+      if (cached.error) {
+        setError(true)
+        setLoading(false)
+      } else {
+        setInvite(cached.data)
+        setLoading(false)
+      }
+      return () => { cancelled = true }
+    }
+
     const fetchInvite = async () => {
       try {
         const res = await apiService.getInvite(inviteCode)
         if (!cancelled && res.data) {
+          inviteCache.set(inviteCode, { ts: Date.now(), error: false, data: res.data })
           setInvite(res.data)
           setLoading(false)
           return
@@ -33,6 +50,7 @@ const InviteEmbed = ({ inviteCode, inviteUrl }) => {
       try {
         const res = await apiService.getCrossHostInvite(inviteCode)
         if (!cancelled && res.data) {
+          inviteCache.set(inviteCode, { ts: Date.now(), error: false, data: res.data })
           setInvite(res.data)
           setLoading(false)
           return
@@ -40,6 +58,7 @@ const InviteEmbed = ({ inviteCode, inviteUrl }) => {
       } catch {}
 
       if (!cancelled) {
+        inviteCache.set(inviteCode, { ts: Date.now(), error: true, data: null })
         setError(true)
         setLoading(false)
       }
@@ -57,7 +76,8 @@ const InviteEmbed = ({ inviteCode, inviteUrl }) => {
       soundService.serverJoined()
       setJoined(true)
     } catch {
-      window.open(inviteUrl, '_blank')
+      const newWindow = window.open(inviteUrl, '_blank', 'noopener,noreferrer')
+      if (newWindow) newWindow.opener = null
     }
     setJoining(false)
   }
@@ -65,7 +85,7 @@ const InviteEmbed = ({ inviteCode, inviteUrl }) => {
   if (loading) {
     return (
       <div className="invite-embed loading">
-        <Loader2 size={18} className="invite-embed-spinner" />
+        <ArrowPathIcon size={18} className="invite-embed-spinner" />
         <span>{t('invitePage.loading', 'Loading invite...')}</span>
       </div>
     )
@@ -75,7 +95,7 @@ const InviteEmbed = ({ inviteCode, inviteUrl }) => {
     return (
       <div className="invite-embed invalid">
         <div className="invite-embed-icon-invalid">
-          <X size={24} />
+          <XMarkIcon size={24} />
         </div>
         <div className="invite-embed-info">
           <div className="invite-embed-label">{t('invitePage.invalidInvite', 'Invalid Invite')}</div>
@@ -97,7 +117,7 @@ const InviteEmbed = ({ inviteCode, inviteUrl }) => {
   return (
     <div className="invite-embed">
       <div className="invite-embed-header">
-        {isExternal && <Globe size={12} />}
+        {isExternal && <GlobeAltIcon size={12} />}
         <span>{t('invitePage.invitedToJoinServer', "You've been invited to join a server")}</span>
       </div>
       <div className="invite-embed-body">
@@ -119,7 +139,7 @@ const InviteEmbed = ({ inviteCode, inviteUrl }) => {
             )}
             <span className="invite-embed-stat">
               <span className="invite-embed-dot members" />
-              <Users size={12} />
+              <UsersIcon size={12} />
               {memberCount} {t('chat.members', 'Members')}
             </span>
           </div>

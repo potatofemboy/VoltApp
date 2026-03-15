@@ -30,15 +30,31 @@
 }
 
 .notification-toast.everyone {
-  border-left: 3px solid #fbbf24;
+  border-left: 3px solid var(--volt-warning);
 }
 
 .notification-toast.here {
-  border-left: 3px solid #60a5fa;
+  border-left: 3px solid var(--volt-primary-light);
 }
 
 .notification-toast.user {
   border-left: 3px solid #a78bfa;
+}
+
+.notification-toast.dm {
+  border-left: 3px solid var(--volt-primary);
+}
+
+.notification-toast.system {
+  border-left: 3px solid var(--volt-success);
+}
+
+.notification-toast.friend-request {
+  border-left: 3px solid var(--volt-accent, #38bdf8);
+}
+
+.notification-toast.default {
+  border-left: 3px solid var(--volt-border-strong, var(--volt-border));
 }
 
 .notification-icon {
@@ -54,20 +70,60 @@
 }
 
 .notification-toast.everyone .notification-icon {
-  color: #fbbf24;
+  color: var(--volt-warning);
 }
 
 .notification-toast.here .notification-icon {
-  color: #60a5fa;
+  color: var(--volt-primary-light);
 }
 
 .notification-toast.user .notification-icon {
   color: #a78bfa;
 }
 
+.notification-toast.dm .notification-icon {
+  color: var(--volt-primary);
+}
+
+.notification-toast.system .notification-icon {
+  color: var(--volt-success);
+}
+
+.notification-toast.friend-request .notification-icon {
+  color: var(--volt-accent, #38bdf8);
+}
+
+.notification-toast.default .notification-icon {
+  color: var(--volt-text-secondary);
+}
+
 .notification-content {
   flex: 1;
   min-width: 0;
+}
+
+.notification-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.notification-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--volt-text-muted);
+}
+
+.notification-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--volt-text-muted);
 }
 
 .notification-title {
@@ -134,5 +190,9 @@
   .notification-toast {
     min-width: auto;
     max-width: none;
+  }
+
+  .notification-topline {
+    gap: 8px;
   }
 }

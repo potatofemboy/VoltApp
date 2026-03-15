@@ -2,6 +2,9 @@ import { useState, useEffect, useRef } from 'react'
 import { useSocket } from '../contexts/SocketContext'
 import SimplePeer from 'simple-peer'
 import { voiceAudio } from '../services/voiceAudio'
+import { useAppStore } from '../store/useAppStore'
+
+const ACTIVITY_DATA_CHANNEL = 'activity-data'
 
 export const useVoiceChannel = (channelId) => {
   const { socket } = useSocket()
@@ -13,6 +16,55 @@ export const useVoiceChannel = (channelId) => {
   const streamRef = useRef(null)
   const audioElsRef = useRef(new Map())
   const isDeafenedRef = useRef(false)
+  const { activeActivities, addActivity } = useAppStore()
+  const activeActivitiesRef = useRef(activeActivities)
+  const prevActivitiesRef = useRef([])
+
+  useEffect(() => {
+    activeActivitiesRef.current = activeActivities
+  }, [activeActivities])
+
+  useEffect(() => {
+    if (!isConnected || activeActivities.length === 0) return
+
+    const newActivities = activeActivities.filter(
+      activity => !prevActivitiesRef.current.some(prev => prev.sessionId === activity.sessionId)
+    )
+
+    if (newActivities.length > 0) {
+      const activityData = JSON.stringify({
+        type: 'activities-sync',
+        activities: activeActivities
+      })
+      Object.values(peersRef.current).forEach(peer => {
+        try {
+          if (peer.connected) {
+            peer.send(activityData)
+          }
+        } catch (e) {
+          console.warn('[VoiceChannel] Failed to broadcast activities to peer:', e)
+        }
+      })
+    }
+
+    prevActivitiesRef.current = activeActivities
+  }, [activeActivities, isConnected])
+
+  const broadcastActivityToPeers = (activity) => {
+    const activityData = JSON.stringify({
+      type: 'activity-joined',
+      activity
+    })
+    Object.values(peersRef.current).forEach(peer => {
+      try {
+        if (peer.connected) {
+          peer.send(activityData)
+        }
+      } catch (e) {
+        console.warn('[VoiceChannel] Failed to broadcast activity to peer:', e)
+      }
+    })
+  }
 
   useEffect(() => {
     isDeafenedRef.current = isDeafened
@@ -60,9 +112,14 @@ export const useVoiceChannel = (channelId) => {
       removeAudioEl(userId)
     }
 
-    const handleVoiceSignal = ({ from, signal }) => {
+    const handleVoiceSignal = ({ from, signal, username }) => {
       if (peersRef.current[from]) {
         peersRef.current[from].signal(signal)
+      } else {
+        const peer = createPeer(null, streamRef.current, from, false)
+        peer.signal(signal)
+        peersRef.current[from] = peer
+        setParticipants(prev => [...prev, { userId: from, username: username || 'Unknown', peerId: from }])
       }
     }
 
@@ -77,11 +134,14 @@ export const useVoiceChannel = (channelId) => {
     }
   }, [socket, channelId])
 
-  const createPeer = (targetPeerId, stream, key) => {
+  const createPeer = (targetPeerId, stream, key, initiator = true) => {
     const peer = new SimplePeer({
-      initiator: true,
+      initiator,
       trickle: false,
-      stream
+      stream,
+      channels: initiator ? {
+        [ACTIVITY_DATA_CHANNEL]: { ordered: false }
+      } : undefined
     })
 
     peer.on('signal', signal => {
@@ -90,6 +150,53 @@ export const useVoiceChannel = (channelId) => {
         signal
       })
     })
+
+    peer.on('connect', () => {
+      const activityData = JSON.stringify({
+        type: 'activities-sync',
+        activities: activeActivitiesRef.current
+      })
+      try {
+        peer.send(activityData)
+      } catch (e) {
+        console.warn('[VoiceChannel] Failed to send activities on connect:', e)
+      }
+    })
+
+    peer.on('data', (data) => {
+      try {
+        const parsed = JSON.parse(data.toString())
+        if (parsed.type === 'activities-sync' && Array.isArray(parsed.activities)) {
+          parsed.activities.forEach(activity => {
+            addActivity(activity)
+          })
+        } else if (parsed.type === 'activity-joined' && parsed.activity) {
+          addActivity(parsed.activity)
+        }
+      } catch (e) {
+        console.warn('[VoiceChannel] Failed to parse peer data:', e)
+      }
+    })
+
+    if (!initiator && peer._pc) {
+      peer._pc.ondatachannel = (event) => {
+        const dataChannel = event.channel
+        dataChannel.onmessage = (e) => {
+          try {
+            const parsed = JSON.parse(e.data)
+            if (parsed.type === 'activities-sync' && Array.isArray(parsed.activities)) {
+              parsed.activities.forEach(activity => {
+                addActivity(activity)
+              })
+            } else if (parsed.type === 'activity-joined' && parsed.activity) {
+              addActivity(parsed.activity)
+            }
+          } catch (err) {
+            console.warn('[VoiceChannel] Failed to parse incoming activity data:', err)
+          }
+        }
+      }
+    }
 
     const attachStream = (remoteStream, peerKey) => {
       if (!remoteStream) return
@@ -185,6 +292,7 @@ export const useVoiceChannel = (channelId) => {
     joinVoiceChannel,
     leaveVoiceChannel,
     toggleMute,
-    toggleDeafen
+    toggleDeafen,
+    broadcastActivityToPeers
   }
 }

@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import '../assets/styles/LinkEmbed.css'
 
-// ─── URL pattern matchers ──────────────────────────────────────────────────
 const EMBED_PATTERNS = {
   youtube: /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/,
   twitch_stream: /twitch\.tv\/([a-zA-Z0-9_]+)$/,
@@ -17,224 +16,383 @@ const EMBED_PATTERNS = {
   reddit: /reddit\.com\/r\/([a-zA-Z0-9_]+)\/comments\/([a-zA-Z0-9]+)/,
   github_repo: /github\.com\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)\/?$/,
   github_gist: /gist\.github\.com\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9]+)/,
-  codepen: /codepen\.io\/[a-zA-Z0-9_-]+\/(?:pen|full)\/[a-zA-Z0-9]+/,
-  tiktok: /tiktok\.com\/@[a-zA-Z0-9_.]+\/video\/\d+/,
-  imgur: /imgur\.com\/(?:a\/|gallery\/)?[a-zA-Z0-9]+/,
-  steam: /store\.steampowered\.com\/app\/\d+/,
-  tenor: /tenor\.com\/view\/[a-zA-Z0-9_-]+-\d+/,
-  giphy: /giphy\.com\/gifs\/[a-zA-Z0-9-]+/,
-  // Age-restricted embeds (require age verification)
+  codepen: /codepen\.io\/([a-zA-Z0-9_-]+)\/(?:pen|full)\/([a-zA-Z0-9]+)/,
+  tiktok: /tiktok\.com\/@([a-zA-Z0-9_.-]+)\/video\/(\d+)/,
+  imgur: /imgur\.com\/(?:a\/|gallery\/)?([a-zA-Z0-9]+)/,
+  steam: /store\.steampowered\.com\/app\/(\d+)/,
+  kiply: /kiply\.io\/view\/([a-zA-Z0-9_-]+-\d+)/,
+  giphy: /giphy\.com\/gifs\/([a-zA-Z0-9-]+)/,
   e621: /e621\.net\/posts\/(\d+)/,
   furaffinity: /furaffinity\.net\/(?:view|full)\/(\d+)/,
-  // fxfuraffinity - direct image embed service (replaces furaffinity.net with fxfuraffinity.net)
   fxfuraffinity: /(?:www\.)?fxfuraffinity\.net\/view\/(\d+)/,
 }
 
-// Patterns that require age verification
 const AGE_RESTRICTED_EMBEDS = new Set(['e621', 'furaffinity', 'fxfuraffinity'])
+const URL_RE = /https?:\/\/[^\s<>"]+[^\s<>".,;:!?)]/g
+const INVITE_URL_RE = /\/invite\/[a-zA-Z0-9_-]+/i
 
-// ─── Detect embed type from URL ────────────────────────────────────────────
+const DIRECT_MEDIA_EXTENSIONS = {
+  direct_image: new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'svg']),
+  direct_video: new Set(['mp4', 'webm', 'mov', 'm4v', 'ogv']),
+  direct_audio: new Set(['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac']),
+}
+
+const getUrlObject = (url) => {
+  try {
+    return new URL(url)
+  } catch {
+    return null
+  }
+}
+
+const trimDomain = (hostname = '') => hostname.replace(/^www\./i, '')
+
+const getInitials = (hostname = '') => {
+  const cleaned = trimDomain(hostname).replace(/[^a-z0-9.]/gi, '')
+  const parts = cleaned.split('.').filter(Boolean)
+  return (parts[0] || cleaned || 'web').slice(0, 2).toUpperCase()
+}
+
+const getPathLabel = (url) => {
+  const parsed = getUrlObject(url)
+  if (!parsed) return url
+  const path = decodeURIComponent(parsed.pathname || '/')
+  const query = parsed.search ? parsed.search.slice(0, 24) : ''
+  if (path === '/' && !query) return 'Homepage'
+  const compactPath = path.length > 48 ? `${path.slice(0, 45)}...` : path
+  return `${compactPath}${query ? ` ${query}` : ''}`
+}
+
+const inferDirectMediaType = (url) => {
+  const parsed = getUrlObject(url)
+  if (!parsed) return null
+  const pathname = parsed.pathname || ''
+  const ext = pathname.split('.').pop()?.toLowerCase()
+  if (!ext) return null
+
+  for (const [type, extensions] of Object.entries(DIRECT_MEDIA_EXTENSIONS)) {
+    if (extensions.has(ext)) {
+      return { type, match: [url, ext] }
+    }
+  }
+
+  return null
+}
+
+const getProxyMediaUrl = (url) => {
+  if (!url) return ''
+
+  try {
+    const baseOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
+    const parsed = new URL(url, baseOrigin)
+    if (typeof window !== 'undefined' && parsed.origin === window.location.origin) {
+      return parsed.toString()
+    }
+
+    return `/api/media/proxy?url=${encodeURIComponent(parsed.toString())}`
+  } catch {
+    return url
+  }
+}
+
 export function detectEmbedType(url) {
   for (const [type, pattern] of Object.entries(EMBED_PATTERNS)) {
     const match = url.match(pattern)
     if (match) return { type, match }
   }
-  return null
-}
 
-// ─── Extract all embeddable URLs from text ─────────────────────────────────
-const URL_RE = /https?:\/\/[^\s<>"]+[^\s<>".,;:!?)]/g
+  const directMedia = inferDirectMediaType(url)
+  if (directMedia) return directMedia
+
+  return { type: 'generic_link', match: null }
+}
 
 export function extractEmbedUrls(content) {
   if (!content) return []
   const urls = content.match(URL_RE) || []
   const seen = new Set()
   const embeds = []
+
   for (const url of urls) {
-    if (seen.has(url)) continue
+    if (seen.has(url) || INVITE_URL_RE.test(url)) continue
     seen.add(url)
-    const detected = detectEmbedType(url)
-    if (detected) {
-      embeds.push({ url, ...detected })
-    }
+    embeds.push({ url, ...detectEmbedType(url) })
   }
+
   return embeds
 }
 
-// ─── YouTube Embed ─────────────────────────────────────────────────────────
-function YouTubeEmbed({ videoId, url }) {
+function EmbedCard({ className = '', provider, title, url, description, media, footer, accent, children }) {
   return (
-    <div className="link-embed youtube-embed">
+    <div className={`link-embed ${className}`.trim()} style={accent ? { '--embed-accent': accent } : undefined}>
       <div className="embed-provider">
-        <img src="https://www.youtube.com/favicon.ico" alt="" className="embed-provider-icon" />
-        <span>YouTube</span>
+        <span className="embed-provider-badge" aria-hidden="true">
+          {provider.icon || getInitials(provider.name)}
+        </span>
+        <span>{provider.name}</span>
       </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        YouTube Video
-      </a>
-      <div className="embed-video-container">
-        <iframe
-          src={`https://www.youtube.com/embed/${videoId}`}
-          title="YouTube video"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-          allowFullScreen
-          loading="lazy"
-        />
-      </div>
+      {title ? (
+        <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
+          {title}
+        </a>
+      ) : null}
+      {description ? <div className="embed-description">{description}</div> : null}
+      {media}
+      {children}
+      {footer ? <div className="embed-link-footer">{footer}</div> : null}
     </div>
   )
 }
 
-// ─── Twitch Stream Embed ───────────────────────────────────────────────────
+function GenericWebsiteEmbed({ url }) {
+  const parsed = getUrlObject(url)
+  const hostname = trimDomain(parsed?.hostname || url)
+  const title = useMemo(() => {
+    const host = hostname || 'Website'
+    const path = getPathLabel(url)
+    return path === 'Homepage' ? host : `${host}${path ? ` ${String.fromCharCode(183)} ${path}` : ''}`
+  }, [hostname, url])
+
+  return (
+    <EmbedCard
+      className="generic-link-embed"
+      provider={{ name: hostname || 'Website' }}
+      title={title}
+      url={url}
+      description={`Open ${hostname || 'this website'} in a new tab.`}
+      footer={
+        <>
+          <span className="embed-meta-pill">{parsed?.protocol?.replace(':', '').toUpperCase() || 'LINK'}</span>
+          <span className="embed-meta-pill">Web Preview</span>
+        </>
+      }
+      accent="var(--volt-primary)"
+    />
+  )
+}
+
+function DirectImageEmbed({ url }) {
+  const host = trimDomain(getUrlObject(url)?.hostname || 'Image')
+  return (
+    <EmbedCard
+      className="direct-media-embed direct-image-embed"
+      provider={{ name: host }}
+      title="Image Link"
+      url={url}
+      media={(
+        <a href={url} target="_blank" rel="noopener noreferrer" className="embed-image-frame">
+          <img src={url} alt="Embedded content" className="embed-preview-image" loading="lazy" />
+        </a>
+      )}
+      footer={<span className="embed-meta-pill">Direct Image</span>}
+      accent="#4cc2ff"
+    />
+  )
+}
+
+function DirectVideoEmbed({ url }) {
+  const host = trimDomain(getUrlObject(url)?.hostname || 'Video')
+  return (
+    <EmbedCard
+      className="direct-media-embed direct-video-embed"
+      provider={{ name: host }}
+      title="Video Link"
+      url={url}
+      media={(
+        <div className="embed-native-media-frame">
+          <video src={getProxyMediaUrl(url)} controls preload="metadata" className="embed-native-video" />
+        </div>
+      )}
+      footer={<span className="embed-meta-pill">Direct Video</span>}
+      accent="#ff7a59"
+    />
+  )
+}
+
+function DirectAudioEmbed({ url }) {
+  const host = trimDomain(getUrlObject(url)?.hostname || 'Audio')
+  return (
+    <EmbedCard
+      className="direct-media-embed direct-audio-embed"
+      provider={{ name: host }}
+      title="Audio Link"
+      url={url}
+      media={(
+        <div className="embed-native-audio-shell">
+          <audio src={getProxyMediaUrl(url)} controls preload="metadata" className="embed-native-audio" />
+        </div>
+      )}
+      footer={<span className="embed-meta-pill">Direct Audio</span>}
+      accent="#66e0a3"
+    />
+  )
+}
+
+function YouTubeEmbed({ videoId, url }) {
+  return (
+    <EmbedCard
+      className="youtube-embed"
+      provider={{ name: 'YouTube', icon: 'YT' }}
+      title="YouTube Video"
+      url={url}
+      media={(
+        <div className="embed-video-container">
+          <iframe
+            src={`https://www.youtube.com/embed/${videoId}`}
+            title="YouTube video"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowFullScreen
+            loading="lazy"
+          />
+        </div>
+      )}
+      accent="#ff3b30"
+    />
+  )
+}
+
 function TwitchStreamEmbed({ channel, url }) {
   const parent = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
   return (
-    <div className="link-embed twitch-embed">
-      <div className="embed-provider">
-        <img src="https://static.twitchcdn.net/assets/favicon-32-e29e246c157142c94346.png" alt="" className="embed-provider-icon" />
-        <span>Twitch</span>
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        {channel}'s Stream
-      </a>
-      <div className="embed-video-container">
-        <iframe
-          src={`https://player.twitch.tv/?channel=${channel}&parent=${parent}`}
-          title="Twitch stream"
-          allowFullScreen
-          loading="lazy"
-        />
-      </div>
-    </div>
+    <EmbedCard
+      className="twitch-embed"
+      provider={{ name: 'Twitch', icon: 'TW' }}
+      title={`${channel}'s Stream`}
+      url={url}
+      media={(
+        <div className="embed-video-container">
+          <iframe
+            src={`https://player.twitch.tv/?channel=${channel}&parent=${parent}`}
+            title="Twitch stream"
+            allowFullScreen
+            loading="lazy"
+          />
+        </div>
+      )}
+      accent="#9146ff"
+    />
   )
 }
 
-// ─── Twitch Video Embed ────────────────────────────────────────────────────
 function TwitchVideoEmbed({ videoId, url }) {
   const parent = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
   return (
-    <div className="link-embed twitch-embed">
-      <div className="embed-provider">
-        <img src="https://static.twitchcdn.net/assets/favicon-32-e29e246c157142c94346.png" alt="" className="embed-provider-icon" />
-        <span>Twitch Video</span>
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        Twitch Video
-      </a>
-      <div className="embed-video-container">
-        <iframe
-          src={`https://player.twitch.tv/?video=${videoId}&parent=${parent}`}
-          title="Twitch video"
-          allowFullScreen
-          loading="lazy"
-        />
-      </div>
-    </div>
+    <EmbedCard
+      className="twitch-embed"
+      provider={{ name: 'Twitch Video', icon: 'TW' }}
+      title="Twitch Video"
+      url={url}
+      media={(
+        <div className="embed-video-container">
+          <iframe
+            src={`https://player.twitch.tv/?video=${videoId}&parent=${parent}`}
+            title="Twitch video"
+            allowFullScreen
+            loading="lazy"
+          />
+        </div>
+      )}
+      accent="#9146ff"
+    />
   )
 }
 
-// ─── Twitch Clip Embed ─────────────────────────────────────────────────────
 function TwitchClipEmbed({ clipId, url }) {
   const parent = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
   return (
-    <div className="link-embed twitch-embed">
-      <div className="embed-provider">
-        <img src="https://static.twitchcdn.net/assets/favicon-32-e29e246c157142c94346.png" alt="" className="embed-provider-icon" />
-        <span>Twitch Clip</span>
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        Twitch Clip
-      </a>
-      <div className="embed-video-container">
-        <iframe
-          src={`https://clips.twitch.tv/embed?clip=${clipId}&parent=${parent}`}
-          title="Twitch clip"
-          allowFullScreen
-          loading="lazy"
-        />
-      </div>
-    </div>
+    <EmbedCard
+      className="twitch-embed"
+      provider={{ name: 'Twitch Clip', icon: 'TW' }}
+      title="Twitch Clip"
+      url={url}
+      media={(
+        <div className="embed-video-container">
+          <iframe
+            src={`https://clips.twitch.tv/embed?clip=${clipId}&parent=${parent}`}
+            title="Twitch clip"
+            allowFullScreen
+            loading="lazy"
+          />
+        </div>
+      )}
+      accent="#9146ff"
+    />
   )
 }
 
-// ─── Spotify Embed ─────────────────────────────────────────────────────────
 function SpotifyEmbed({ type, id, url }) {
-  const height = type === 'track' ? 152 : type === 'episode' ? 152 : 352
+  const height = type === 'track' || type === 'episode' ? 152 : 352
   return (
-    <div className="link-embed spotify-embed">
-      <div className="embed-provider">
-        <svg className="embed-provider-icon" viewBox="0 0 24 24" width="16" height="16" fill="#1DB954">
-          <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
-        </svg>
-        <span>Spotify</span>
-      </div>
-      <iframe
-        src={`https://open.spotify.com/embed/${type}/${id}?theme=0`}
-        width="100%"
-        height={height}
-        allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-        loading="lazy"
-        className="spotify-iframe"
-      />
-    </div>
+    <EmbedCard
+      className="spotify-embed"
+      provider={{ name: 'Spotify', icon: 'SP' }}
+      title={`Spotify ${type}`}
+      url={url}
+      media={(
+        <iframe
+          src={`https://open.spotify.com/embed/${type}/${id}?theme=0`}
+          width="100%"
+          height={height}
+          allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+          loading="lazy"
+          className="spotify-iframe"
+        />
+      )}
+      accent="#1db954"
+    />
   )
 }
 
-// ─── SoundCloud Embed ──────────────────────────────────────────────────────
-function SoundCloudEmbed({ path, url }) {
+function SoundCloudEmbed({ url }) {
   const encodedUrl = encodeURIComponent(url)
   return (
-    <div className="link-embed soundcloud-embed">
-      <div className="embed-provider">
-        <svg className="embed-provider-icon" viewBox="0 0 24 24" width="16" height="16" fill="#FF5500">
-          <path d="M1.175 12.225c-.051 0-.094.046-.101.1l-.233 2.154.233 2.105c.007.058.05.098.101.098.05 0 .09-.04.099-.098l.255-2.105-.27-2.154c-.009-.06-.05-.1-.1-.1m-.899.828c-.06 0-.091.037-.104.094L0 14.479l.172 1.282c.013.06.045.094.104.094.057 0 .09-.037.104-.094l.199-1.282-.199-1.332c-.014-.057-.047-.094-.104-.094m1.8-1.143c-.063 0-.104.05-.112.109l-.218 2.459.218 2.395c.008.063.049.109.112.109.063 0 .104-.046.112-.109l.247-2.395-.247-2.459c-.008-.063-.049-.109-.112-.109m.899-.166c-.072 0-.116.054-.121.121l-.199 2.625.199 2.58c.005.067.049.121.121.121.072 0 .116-.054.121-.121l.225-2.58-.225-2.625c-.005-.067-.049-.121-.121-.121m.899-.2c-.081 0-.126.058-.131.134l-.18 2.825.18 2.745c.005.076.05.134.131.134.081 0 .126-.058.131-.134l.203-2.745-.203-2.825c-.005-.076-.05-.134-.131-.134m.9-.167c-.09 0-.135.063-.139.146l-.162 2.992.162 2.879c.004.083.049.146.139.146.09 0 .135-.063.139-.146l.184-2.879-.184-2.992c-.004-.083-.049-.146-.139-.146m.899-.129c-.099 0-.143.067-.148.158l-.143 3.121.143 2.984c.005.091.049.158.148.158.099 0 .143-.067.148-.158l.162-2.984-.162-3.121c-.005-.091-.049-.158-.148-.158m.9-.098c-.108 0-.152.072-.157.17l-.124 3.219.124 3.06c.005.098.049.17.157.17.108 0 .152-.072.157-.17l.14-3.06-.14-3.219c-.005-.098-.049-.17-.157-.17m.899-.048c-.117 0-.161.076-.166.182l-.105 3.267.105 3.107c.005.106.049.182.166.182.117 0 .161-.076.166-.182l.119-3.107-.119-3.267c-.005-.106-.049-.182-.166-.182m2.699-1.404c-.054 0-.105.009-.157.022-.13-1.573-1.449-2.805-3.055-2.805-.407 0-.801.084-1.167.229-.144.058-.182.117-.184.232v8.793c.002.12.089.219.207.232h4.356c1.282 0 2.321-1.039 2.321-2.321s-1.039-2.382-2.321-2.382"/>
-        </svg>
-        <span>SoundCloud</span>
-      </div>
-      <iframe
-        width="100%"
-        height="166"
-        scrolling="no"
-        src={`https://w.soundcloud.com/player/?url=${encodedUrl}&color=%23ff5500&auto_play=false&hide_related=true&show_comments=false&show_user=true&show_reposts=false&show_teaser=false`}
-        loading="lazy"
-        className="soundcloud-iframe"
-      />
-    </div>
+    <EmbedCard
+      className="soundcloud-embed"
+      provider={{ name: 'SoundCloud', icon: 'SC' }}
+      title="SoundCloud Track"
+      url={url}
+      media={(
+        <iframe
+          width="100%"
+          height="166"
+          scrolling="no"
+          src={`https://w.soundcloud.com/player/?url=${encodedUrl}&color=%23ff5500&auto_play=false&hide_related=true&show_comments=false&show_user=true&show_reposts=false&show_teaser=false`}
+          loading="lazy"
+          className="soundcloud-iframe"
+        />
+      )}
+      accent="#ff5500"
+    />
   )
 }
 
-// ─── Vimeo Embed ───────────────────────────────────────────────────────────
 function VimeoEmbed({ videoId, url }) {
   return (
-    <div className="link-embed vimeo-embed">
-      <div className="embed-provider">
-        <svg className="embed-provider-icon" viewBox="0 0 24 24" width="16" height="16" fill="#1AB7EA">
-          <path d="M23.977 6.416c-.105 2.338-1.739 5.543-4.894 9.609-3.268 4.247-6.026 6.37-8.29 6.37-1.409 0-2.578-1.294-3.553-3.881L5.322 11.4C4.603 8.816 3.834 7.522 3.01 7.522c-.179 0-.806.378-1.881 1.132L0 7.197c1.185-1.044 2.351-2.084 3.501-3.128C5.08 2.701 6.266 1.984 7.055 1.91c1.867-.18 3.016 1.1 3.447 3.838.465 2.953.789 4.789.971 5.507.539 2.45 1.131 3.674 1.776 3.674.502 0 1.256-.796 2.265-2.385 1.004-1.589 1.54-2.797 1.612-3.628.144-1.371-.395-2.061-1.614-2.061-.574 0-1.167.121-1.777.391 1.186-3.868 3.434-5.757 6.762-5.637 2.473.06 3.628 1.664 3.493 4.797l-.013.01z"/>
-        </svg>
-        <span>Vimeo</span>
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        Vimeo Video
-      </a>
-      <div className="embed-video-container">
-        <iframe
-          src={`https://player.vimeo.com/video/${videoId}?dnt=1`}
-          title="Vimeo video"
-          allow="autoplay; fullscreen; picture-in-picture"
-          allowFullScreen
-          loading="lazy"
-        />
-      </div>
-    </div>
+    <EmbedCard
+      className="vimeo-embed"
+      provider={{ name: 'Vimeo', icon: 'VI' }}
+      title="Vimeo Video"
+      url={url}
+      media={(
+        <div className="embed-video-container">
+          <iframe
+            src={`https://player.vimeo.com/video/${videoId}?dnt=1`}
+            title="Vimeo video"
+            allow="autoplay; fullscreen; picture-in-picture"
+            allowFullScreen
+            loading="lazy"
+          />
+        </div>
+      )}
+      accent="#1ab7ea"
+    />
   )
 }
 
-// ─── Twitter/X Embed ───────────────────────────────────────────────────────
-function TwitterEmbed({ user, tweetId, url }) {
+function TwitterEmbed({ url }) {
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
-    // Load Twitter widget script if not already loaded
     if (!window.twttr) {
       const script = document.createElement('script')
       script.src = 'https://platform.twitter.com/widgets.js'
@@ -253,41 +411,27 @@ function TwitterEmbed({ user, tweetId, url }) {
   }, [loaded])
 
   return (
-    <div className="link-embed twitter-embed">
-      <div className="embed-provider">
-        <svg className="embed-provider-icon" viewBox="0 0 24 24" width="16" height="16" fill="#fff">
-          <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-        </svg>
-        <span>X (Twitter)</span>
-      </div>
+    <EmbedCard className="twitter-embed" provider={{ name: 'X / Twitter', icon: 'X' }} title="Tweet" url={url} accent="#1da1f2">
       <blockquote className="twitter-tweet" data-theme="dark" data-dnt="true">
         <a href={url}>Loading tweet...</a>
       </blockquote>
-    </div>
+    </EmbedCard>
   )
 }
 
-// ─── Reddit Embed ──────────────────────────────────────────────────────────
-function RedditEmbed({ subreddit, postId, url }) {
+function RedditEmbed({ subreddit, url }) {
   return (
-    <div className="link-embed reddit-embed">
-      <div className="embed-provider">
-        <svg className="embed-provider-icon" viewBox="0 0 24 24" width="16" height="16" fill="#FF4500">
-          <path d="M12 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0zm5.01 4.744c.688 0 1.25.561 1.25 1.249a1.25 1.25 0 0 1-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 0 1 .042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 0 1 4.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 0 1 .14-.197.35.35 0 0 1 .238-.042l2.906.617a1.214 1.214 0 0 1 1.108-.701zM9.25 12C8.561 12 8 12.562 8 13.25c0 .687.561 1.248 1.25 1.248.687 0 1.248-.561 1.248-1.249 0-.688-.561-1.249-1.249-1.249zm5.5 0c-.687 0-1.248.561-1.248 1.25 0 .687.561 1.248 1.249 1.248.688 0 1.249-.561 1.249-1.249 0-.687-.562-1.249-1.25-1.249zm-5.466 3.99a.327.327 0 0 0-.231.094.33.33 0 0 0 0 .463c.842.842 2.484.913 2.961.913.477 0 2.105-.056 2.961-.913a.361.361 0 0 0 .029-.463.33.33 0 0 0-.464 0c-.547.533-1.684.73-2.512.73-.828 0-1.979-.196-2.512-.73a.326.326 0 0 0-.232-.095z"/>
-        </svg>
-        <span>Reddit</span>
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        r/{subreddit} post
-      </a>
-      <div className="embed-description reddit-desc">
-        <a href={url} target="_blank" rel="noopener noreferrer">View on Reddit →</a>
-      </div>
-    </div>
+    <EmbedCard
+      className="reddit-embed"
+      provider={{ name: 'Reddit', icon: 'R' }}
+      title={`r/${subreddit} post`}
+      url={url}
+      description={<a href={url} target="_blank" rel="noopener noreferrer">View on Reddit</a>}
+      accent="#ff4500"
+    />
   )
 }
 
-// ─── GitHub Repo Embed ─────────────────────────────────────────────────────
 function GitHubRepoEmbed({ repo, url }) {
   const [repoData, setRepoData] = useState(null)
   const [error, setError] = useState(false)
@@ -295,249 +439,236 @@ function GitHubRepoEmbed({ repo, url }) {
   useEffect(() => {
     let cancelled = false
     fetch(`https://api.github.com/repos/${repo}`)
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(data => { if (!cancelled) setRepoData(data) })
-      .catch(() => { if (!cancelled) setError(true) })
-    return () => { cancelled = true }
+      .then((response) => (response.ok ? response.json() : Promise.reject()))
+      .then((data) => {
+        if (!cancelled) setRepoData(data)
+      })
+      .catch(() => {
+        if (!cancelled) setError(true)
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [repo])
 
   if (error || !repoData) {
     return (
-      <div className="link-embed github-embed">
-        <div className="embed-provider">
-          <svg className="embed-provider-icon" viewBox="0 0 24 24" width="16" height="16" fill="#fff">
-            <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
-          </svg>
-          <span>GitHub</span>
-        </div>
-        <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">{repo}</a>
-      </div>
+      <EmbedCard
+        className="github-embed"
+        provider={{ name: 'GitHub', icon: 'GH' }}
+        title={repo}
+        url={url}
+        accent="#8b5cf6"
+      />
     )
   }
 
   return (
-    <div className="link-embed github-embed">
-      <div className="embed-provider">
-        <svg className="embed-provider-icon" viewBox="0 0 24 24" width="16" height="16" fill="#fff">
-          <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
-        </svg>
-        <span>GitHub</span>
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        {repoData.full_name}
-      </a>
-      {repoData.description && (
-        <div className="embed-description">{repoData.description}</div>
+    <EmbedCard
+      className="github-embed"
+      provider={{ name: 'GitHub', icon: 'GH' }}
+      title={repoData.full_name}
+      url={url}
+      description={repoData.description}
+      accent="#8b5cf6"
+      footer={(
+        <>
+          <span className="embed-meta-pill">★ {repoData.stargazers_count?.toLocaleString()}</span>
+          <span className="embed-meta-pill">Forks {repoData.forks_count?.toLocaleString()}</span>
+          {repoData.language ? <span className="embed-meta-pill">{repoData.language}</span> : null}
+        </>
       )}
-      <div className="github-stats">
-        <span className="github-stat">⭐ {repoData.stargazers_count?.toLocaleString()}</span>
-        <span className="github-stat">🍴 {repoData.forks_count?.toLocaleString()}</span>
-        {repoData.language && <span className="github-stat github-lang">● {repoData.language}</span>}
-        {repoData.license?.spdx_id && <span className="github-stat">📄 {repoData.license.spdx_id}</span>}
-      </div>
-    </div>
+    />
   )
 }
 
-// ─── GitHub Gist Embed ─────────────────────────────────────────────────────
-function GitHubGistEmbed({ gistPath, url }) {
+function GitHubGistEmbed({ url }) {
   return (
-    <div className="link-embed github-embed gist-embed">
-      <div className="embed-provider">
-        <svg className="embed-provider-icon" viewBox="0 0 24 24" width="16" height="16" fill="#fff">
-          <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
-        </svg>
-        <span>GitHub Gist</span>
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        View Gist
-      </a>
-      <div className="embed-description">
-        <a href={url} target="_blank" rel="noopener noreferrer">Open Gist on GitHub →</a>
-      </div>
-    </div>
+    <EmbedCard
+      className="github-embed gist-embed"
+      provider={{ name: 'GitHub Gist', icon: 'GH' }}
+      title="View Gist"
+      url={url}
+      description={<a href={url} target="_blank" rel="noopener noreferrer">Open Gist on GitHub</a>}
+      accent="#6e7681"
+    />
   )
 }
 
-// ─── CodePen Embed ─────────────────────────────────────────────────────────
 function CodePenEmbed({ user, penId, url }) {
   return (
-    <div className="link-embed codepen-embed">
-      <div className="embed-provider">
-        <svg className="embed-provider-icon" viewBox="0 0 24 24" width="16" height="16" fill="#fff">
-          <path d="M18.144 13.067v-2.134L16.55 12zm1.812 1.136c-.034.024-.07.05-.104.07l-4.08 2.72L12 19.26v3.263l7.344-4.896c.2-.134.312-.333.312-.544v-3.88zm-7.956.63l-2.644-1.76-2.644 1.76 2.644 1.76zm-3.456-2.304L5.9 10.77v2.458zm7.956-5.396L12 4.477 4.656 9.373c-.2.134-.312.333-.312.544v3.88c0 .036.004.073.012.107l.092.063 4.08 2.72L12 14.42l3.772 2.514 4.08-2.72.092-.063c.008-.034.012-.071.012-.107v-3.88c0-.211-.112-.41-.312-.544z"/>
-        </svg>
-        <span>CodePen</span>
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        Pen by {user}
-      </a>
-      <div className="embed-video-container codepen-container">
-        <iframe
-          src={`https://codepen.io/${user}/embed/${penId}?default-tab=result&theme-id=dark`}
-          title="CodePen"
-          loading="lazy"
-          allowFullScreen
-        />
-      </div>
-    </div>
+    <EmbedCard
+      className="codepen-embed"
+      provider={{ name: 'CodePen', icon: 'CP' }}
+      title={`Pen by ${user}`}
+      url={url}
+      media={(
+        <div className="embed-video-container codepen-container">
+          <iframe
+            src={`https://codepen.io/${user}/embed/${penId}?default-tab=result&theme-id=dark`}
+            title="CodePen"
+            loading="lazy"
+            allowFullScreen
+          />
+        </div>
+      )}
+      accent="#47cf73"
+    />
   )
 }
 
-// ─── TikTok Embed ──────────────────────────────────────────────────────────
-function TikTokEmbed({ user, videoId, url }) {
+function TikTokEmbed({ user, url }) {
   return (
-    <div className="link-embed tiktok-embed">
-      <div className="embed-provider">
-        <svg className="embed-provider-icon" viewBox="0 0 24 24" width="16" height="16" fill="#fff">
-          <path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93-.01 2.92.01 5.84-.02 8.75-.08 1.4-.54 2.79-1.35 3.94-1.31 1.92-3.58 3.17-5.91 3.21-1.43.08-2.86-.31-4.08-1.03-2.02-1.19-3.44-3.37-3.65-5.71-.02-.5-.03-1-.01-1.49.18-1.9 1.12-3.72 2.58-4.96 1.66-1.44 3.98-2.13 6.15-1.72.02 1.48-.04 2.96-.04 4.44-.99-.32-2.15-.23-3.02.37-.63.41-1.11 1.04-1.36 1.75-.21.51-.15 1.07-.14 1.61.24 1.64 1.82 3.02 3.5 2.87 1.12-.01 2.19-.66 2.77-1.61.19-.33.4-.67.41-1.06.1-1.79.06-3.57.07-5.36.01-4.03-.01-8.05.02-12.07z"/>
-        </svg>
-        <span>TikTok</span>
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        @{user}'s TikTok
-      </a>
-      <div className="embed-description">
-        <a href={url} target="_blank" rel="noopener noreferrer">Watch on TikTok →</a>
-      </div>
-    </div>
+    <EmbedCard
+      className="tiktok-embed"
+      provider={{ name: 'TikTok', icon: 'TT' }}
+      title={`@${user}'s TikTok`}
+      url={url}
+      description={<a href={url} target="_blank" rel="noopener noreferrer">Watch on TikTok</a>}
+      accent="#fe2c55"
+    />
   )
 }
 
-// ─── Imgur Embed ────────────────────────────────────────────────────────────
 function ImgurEmbed({ id, url }) {
   const [errored, setErrored] = useState(false)
   const imgUrl = `https://i.imgur.com/${id}.jpg`
 
   if (errored) {
     return (
-      <div className="link-embed imgur-embed">
-        <div className="embed-provider">
-          <span className="embed-provider-icon" style={{ color: '#1BB76E', fontWeight: 700, fontSize: 14 }}>imgur</span>
-          <span>Imgur</span>
-        </div>
-        <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-          View on Imgur →
-        </a>
-      </div>
+      <EmbedCard
+        className="imgur-embed"
+        provider={{ name: 'Imgur', icon: 'IM' }}
+        title="View on Imgur"
+        url={url}
+        accent="#1bb76e"
+      />
     )
   }
 
   return (
-    <div className="link-embed imgur-embed">
-      <div className="embed-provider">
-        <span className="embed-provider-icon" style={{ color: '#1BB76E', fontWeight: 700, fontSize: 14 }}>imgur</span>
-        <span>Imgur</span>
-      </div>
-      <div className="imgur-image-container">
-        <img
-          src={imgUrl}
-          alt="Imgur"
-          className="imgur-image"
-          onError={() => setErrored(true)}
-          loading="lazy"
-        />
-      </div>
-    </div>
+    <EmbedCard
+      className="imgur-embed"
+      provider={{ name: 'Imgur', icon: 'IM' }}
+      title="Imgur Image"
+      url={url}
+      media={(
+        <div className="embed-image-frame">
+          <img
+            src={imgUrl}
+            alt="Imgur"
+            className="embed-preview-image"
+            onError={() => setErrored(true)}
+            loading="lazy"
+          />
+        </div>
+      )}
+      accent="#1bb76e"
+    />
   )
 }
 
-// ─── Steam Embed ───────────────────────────────────────────────────────────
 function SteamEmbed({ appId, url }) {
   return (
-    <div className="link-embed steam-embed">
-      <div className="embed-provider">
-        <svg className="embed-provider-icon" viewBox="0 0 24 24" width="16" height="16" fill="#fff">
-          <path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.727L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.605 0 11.979 0zM7.54 18.21l-1.473-.61c.262.543.714.999 1.314 1.25 1.297.539 2.793-.076 3.332-1.375.263-.63.264-1.319.005-1.949s-.75-1.121-1.377-1.383c-.624-.26-1.29-.249-1.878-.03l1.523.63c.956.4 1.409 1.5 1.009 2.455-.397.957-1.497 1.41-2.454 1.012H7.54zm11.415-9.303c0-1.662-1.353-3.015-3.015-3.015-1.665 0-3.015 1.353-3.015 3.015 0 1.665 1.35 3.015 3.015 3.015 1.663 0 3.015-1.35 3.015-3.015zm-5.273-.005c0-1.252 1.013-2.266 2.265-2.266 1.249 0 2.266 1.014 2.266 2.266 0 1.251-1.017 2.265-2.266 2.265-1.253 0-2.265-1.014-2.265-2.265z"/>
-        </svg>
-        <span>Steam</span>
-      </div>
-      <div className="steam-capsule">
-        <img
-          src={`https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`}
-          alt="Steam game"
-          className="steam-header-img"
-          loading="lazy"
-        />
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        View on Steam →
-      </a>
-    </div>
+    <EmbedCard
+      className="steam-embed"
+      provider={{ name: 'Steam', icon: 'ST' }}
+      title="View on Steam"
+      url={url}
+      media={(
+        <div className="steam-capsule">
+          <img
+            src={`https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`}
+            alt="Steam game"
+            className="steam-header-img"
+            loading="lazy"
+          />
+        </div>
+      )}
+      accent="#66c0f4"
+    />
   )
 }
 
-// ─── Tenor GIF Embed ───────────────────────────────────────────────────────
-function TenorEmbed({ id, url }) {
+function KiplyEmbed({ id, url }) {
   return (
-    <div className="link-embed tenor-embed">
-      <div className="embed-provider">
-        <span className="embed-provider-icon" style={{ fontWeight: 700, fontSize: 12, color: '#3B82F6' }}>GIF</span>
-        <span>Tenor</span>
-      </div>
-      <div className="tenor-gif-container">
-        <iframe
-          src={`https://tenor.com/embed/${id}`}
-          width="100%"
-          height="300"
-          loading="lazy"
-          className="tenor-iframe"
-        />
-      </div>
-    </div>
+    <EmbedCard
+      className="kiply-embed"
+      provider={{ name: 'Kiply', icon: 'GI' }}
+      title="Kiply GIF"
+      url={url}
+      media={(
+        <div className="kiply-gif-container">
+          <iframe
+            src={`https://kiply.io/embed/${id}`}
+            width="100%"
+            height="300"
+            loading="lazy"
+            className="kiply-iframe"
+          />
+        </div>
+      )}
+      accent="var(--volt-primary)"
+    />
   )
 }
 
-// ─── Giphy GIF Embed ───────────────────────────────────────────────────────
 function GiphyEmbed({ id, url }) {
   return (
-    <div className="link-embed giphy-embed">
-      <div className="embed-provider">
-        <span className="embed-provider-icon" style={{ fontWeight: 700, fontSize: 12, color: '#00FF99' }}>GIF</span>
-        <span>Giphy</span>
-      </div>
-      <div className="giphy-gif-container">
-        <img
-          src={`https://media.giphy.com/media/${id}/giphy.gif`}
-          alt="Giphy GIF"
-          className="giphy-gif-img"
-          loading="lazy"
-        />
-      </div>
-    </div>
+    <EmbedCard
+      className="giphy-embed"
+      provider={{ name: 'Giphy', icon: 'GI' }}
+      title="Giphy GIF"
+      url={url}
+      media={(
+        <div className="giphy-gif-container">
+          <img
+            src={`https://media.giphy.com/media/${id}/giphy.gif`}
+            alt="Giphy GIF"
+            className="embed-preview-image"
+            loading="lazy"
+          />
+        </div>
+      )}
+      accent="#00ff99"
+    />
   )
 }
 
-// ─── e621 Embed (Age-restricted) ────────────────────────────────────────────
 function E621Embed({ postId, url }) {
   const [postData, setPostData] = useState(null)
   const [error, setError] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    // e621 API endpoint
     fetch(`https://e621.net/posts/${postId}.json`, {
       headers: {
-        'User-Agent': 'VoltChat/1.0 (link embed preview)'
-      }
+        'User-Agent': 'VoltChat/1.0 (link embed preview)',
+      },
     })
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(data => { if (!cancelled) setPostData(data) })
-      .catch(() => { if (!cancelled) setError(true) })
-    return () => { cancelled = true }
+      .then((response) => (response.ok ? response.json() : Promise.reject()))
+      .then((data) => {
+        if (!cancelled) setPostData(data)
+      })
+      .catch(() => {
+        if (!cancelled) setError(true)
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [postId])
 
   if (error || !postData?.post) {
     return (
-      <div className="link-embed e621-embed">
-        <div className="embed-provider">
-          <span className="embed-provider-icon" style={{ fontWeight: 700, fontSize: 12, color: '#00549E' }}>e621</span>
-          <span>e621</span>
-        </div>
-        <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-          View on e621 →
-        </a>
-      </div>
+      <EmbedCard
+        className="e621-embed"
+        provider={{ name: 'e621', icon: 'E6' }}
+        title={`Post #${postId}`}
+        url={url}
+        accent="#00549e"
+      />
     )
   }
 
@@ -546,187 +677,125 @@ function E621Embed({ postId, url }) {
   const fileUrl = post.file?.url
   const artist = post.tags?.artist?.join(', ') || 'Unknown'
   const rating = post.rating
+  const ratingLabel = rating === 's' ? 'Safe' : rating === 'q' ? 'Questionable' : 'Explicit'
 
   return (
-    <div className="link-embed e621-embed">
-      <div className="embed-provider">
-        <span className="embed-provider-icon" style={{ fontWeight: 700, fontSize: 12, color: '#00549E' }}>e621</span>
-        <span>e621</span>
-        {rating && (
-          <span className={`embed-rating rating-${rating}`}>
-            {rating === 's' ? 'Safe' : rating === 'q' ? 'Questionable' : 'Explicit'}
-          </span>
-        )}
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        Post #{postId}
-      </a>
-      <div className="embed-description">
-        <span className="embed-artist">by {artist}</span>
-      </div>
-      {previewUrl && (
-        <div className="embed-image-container">
+    <EmbedCard
+      className="e621-embed"
+      provider={{ name: 'e621', icon: 'E6' }}
+      title={`Post #${postId}`}
+      url={url}
+      description={`by ${artist}`}
+      accent="#00549e"
+      footer={
+        <>
+          <span className={`embed-meta-pill rating-pill rating-${rating}`}>{ratingLabel}</span>
+          <a href={url} target="_blank" rel="noopener noreferrer">View on e621</a>
+        </>
+      }
+      media={previewUrl ? (
+        <div className="embed-image-frame">
           <a href={fileUrl || previewUrl} target="_blank" rel="noopener noreferrer">
+            <img src={previewUrl} alt={`e621 post ${postId}`} className="embed-preview-image" loading="lazy" />
+          </a>
+        </div>
+      ) : null}
+    />
+  )
+}
+
+function FurAffinityEmbed({ submissionId, url }) {
+  return (
+    <EmbedCard
+      className="furaffinity-embed"
+      provider={{ name: 'FurAffinity', icon: 'FA' }}
+      title={`Submission #${submissionId}`}
+      url={url}
+      description="FurAffinity submission. Open the site for the full page."
+      accent="#faaf3a"
+      footer={<span className="embed-meta-pill">18+</span>}
+    />
+  )
+}
+
+function FxFurAffinityEmbed({ submissionId, url }) {
+  const [errored, setErrored] = useState(false)
+  const useFullsize = url.includes('?full')
+  const imageUrl = `https://fxfuraffinity.net/view/${submissionId}${useFullsize ? '?full' : ''}`
+
+  if (errored) {
+    return (
+      <EmbedCard
+        className="furaffinity-embed"
+        provider={{ name: 'FurAffinity', icon: 'FA' }}
+        title="View Submission"
+        url={url}
+        accent="#faaf3a"
+      />
+    )
+  }
+
+  return (
+    <EmbedCard
+      className="furaffinity-embed"
+      provider={{ name: 'FurAffinity', icon: 'FA' }}
+      title={`Submission #${submissionId}`}
+      url={url}
+      accent="#faaf3a"
+      footer={<span className="embed-meta-pill">{useFullsize ? 'Full Size' : 'Preview'}</span>}
+      media={(
+        <div className="embed-image-frame">
+          <a href={imageUrl} target="_blank" rel="noopener noreferrer">
             <img
-              src={previewUrl}
-              alt={`e621 post ${postId}`}
+              src={imageUrl}
+              alt={`FurAffinity submission ${submissionId}`}
               className="embed-preview-image"
+              onError={() => setErrored(true)}
               loading="lazy"
             />
           </a>
         </div>
       )}
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-footer">
-        View on e621 →
-      </a>
-    </div>
+    />
   )
 }
 
-// ─── FurAffinity Embed (Age-restricted) ─────────────────────────────────────
-function FurAffinityEmbed({ submissionId, url }) {
-  // FurAffinity doesn't have a public API, so we show a preview card
-  return (
-    <div className="link-embed furaffinity-embed">
-      <div className="embed-provider">
-        <span className="embed-provider-icon" style={{ fontWeight: 700, fontSize: 12, color: '#FAAF3A' }}>FA</span>
-        <span>FurAffinity</span>
-        <span className="embed-rating rating-mature">18+</span>
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-        Submission #{submissionId}
-      </a>
-      <div className="embed-description">
-        <p>FurAffinity submission. Click to view on the site.</p>
-      </div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-footer">
-        View on FurAffinity →
-      </a>
-    </div>
-  )
-}
-
-// ─── FxFurAffinity Embed (Direct image embed via fxfuraffinity.net) ─────────
-function FxFurAffinityEmbed({ submissionId, url }) {
-  const [errored, setErrored] = useState(false)
-  // Check if URL has ?full parameter for fullsize image
-  const useFullsize = url.includes('?full')
-  // fxfuraffinity.net serves the image directly
-  const imageUrl = `https://fxfuraffinity.net/view/${submissionId}${useFullsize ? '?full' : ''}`
-
-  if (errored) {
-    return (
-      <div className="link-embed furaffinity-embed">
-        <div className="embed-provider">
-          <span className="embed-provider-icon" style={{ fontWeight: 700, fontSize: 12, color: '#FAAF3A' }}>FA</span>
-          <span>FurAffinity</span>
-        </div>
-        <a href={url} target="_blank" rel="noopener noreferrer" className="embed-link-title">
-          View Submission →
-        </a>
-      </div>
-    )
-  }
-
-  return (
-    <div className="link-embed furaffinity-embed">
-      <div className="embed-provider">
-        <span className="embed-provider-icon" style={{ fontWeight: 700, fontSize: 12, color: '#FAAF3A' }}>FA</span>
-        <span>FurAffinity</span>
-        {useFullsize && <span className="embed-rating rating-full">Full</span>}
-      </div>
-      <div className="embed-image-container">
-        <a href={imageUrl} target="_blank" rel="noopener noreferrer">
-          <img
-            src={imageUrl}
-            alt={`FurAffinity submission ${submissionId}`}
-            className="embed-preview-image"
-            onError={() => setErrored(true)}
-            loading="lazy"
-          />
-        </a>
-      </div>
-      <a href={`https://www.furaffinity.net/view/${submissionId}`} target="_blank" rel="noopener noreferrer" className="embed-link-footer">
-        View on FurAffinity →
-      </a>
-    </div>
-  )
-}
-
-// ─── Age Gate for restricted embeds ─────────────────────────────────────────
 function AgeGatedEmbed({ type, postId, url, isAgeVerified }) {
   const [showContent, setShowContent] = useState(false)
 
-  // If user is age verified, show content directly
   if (isAgeVerified || showContent) {
-    if (type === 'e621') {
-      return <E621Embed postId={postId} url={url} />
-    }
-    if (type === 'furaffinity') {
-      return <FurAffinityEmbed submissionId={postId} url={url} />
-    }
-    if (type === 'fxfuraffinity') {
-      return <FxFurAffinityEmbed submissionId={postId} url={url} />
-    }
+    if (type === 'e621') return <E621Embed postId={postId} url={url} />
+    if (type === 'furaffinity') return <FurAffinityEmbed submissionId={postId} url={url} />
+    if (type === 'fxfuraffinity') return <FxFurAffinityEmbed submissionId={postId} url={url} />
     return null
   }
 
-  // Determine provider name
-  const getProviderInfo = () => {
-    if (type === 'e621') return { icon: 'e621', name: 'e621' }
-    if (type === 'fxfuraffinity') return { icon: 'FA', name: 'FurAffinity' }
-    return { icon: 'FA', name: 'FurAffinity' }
-  }
-  const provider = getProviderInfo()
+  const providerName = type === 'e621' ? 'e621' : 'FurAffinity'
 
-  // Show age gate
   return (
-    <div className="link-embed age-gated-embed">
-      <div className="embed-provider">
-        <span className="embed-provider-icon" style={{ fontWeight: 700, fontSize: 12 }}>
-          {provider.icon}
-        </span>
-        <span>{provider.name}</span>
+    <EmbedCard
+      className="age-gated-embed"
+      provider={{ name: providerName, icon: providerName === 'e621' ? 'E6' : 'FA' }}
+      title="Age-Restricted Content"
+      url={url}
+      description="This embed contains adult content."
+      accent="var(--volt-danger)"
+    >
+      <div className="age-gate-actions">
+        <button type="button" className="embed-primary-btn" onClick={() => setShowContent(true)}>
+          Show Content
+        </button>
+        <a href={url} target="_blank" rel="noopener noreferrer" className="embed-secondary-btn">
+          Open Link
+        </a>
       </div>
-      <div className="age-gate-content">
-        <div className="age-gate-icon">🔞</div>
-        <div className="age-gate-text">
-          <h4>Age-Restricted Content</h4>
-          <p>This embed contains adult content.</p>
-        </div>
-        <div className="age-gate-actions">
-          <button 
-            className="btn btn-primary btn-sm"
-            onClick={() => setShowContent(true)}
-          >
-            Show Content
-          </button>
-          <a 
-            href={url} 
-            target="_blank" 
-            rel="noopener noreferrer" 
-            className="btn btn-secondary btn-sm"
-          >
-            Open Link
-          </a>
-        </div>
-      </div>
-    </div>
+    </EmbedCard>
   )
 }
 
-// ─── Main LinkEmbed dispatcher ─────────────────────────────────────────────
 const LinkEmbed = ({ url, type, match, isAgeVerified }) => {
-  // Handle age-restricted embeds
   if (AGE_RESTRICTED_EMBEDS.has(type)) {
-    return (
-      <AgeGatedEmbed 
-        type={type} 
-        postId={match[1]} 
-        url={url} 
-        isAgeVerified={isAgeVerified}
-      />
-    )
+    return <AgeGatedEmbed type={type} postId={match[1]} url={url} isAgeVerified={isAgeVerified} />
   }
 
   switch (type) {
@@ -747,31 +816,38 @@ const LinkEmbed = ({ url, type, match, isAgeVerified }) => {
     case 'spotify_episode':
       return <SpotifyEmbed type="episode" id={match[1]} url={url} />
     case 'soundcloud':
-      return <SoundCloudEmbed path={match[1]} url={url} />
+      return <SoundCloudEmbed url={url} />
     case 'vimeo':
       return <VimeoEmbed videoId={match[1]} url={url} />
     case 'twitter':
-      return <TwitterEmbed user={match[1]} tweetId={match[2]} url={url} />
+      return <TwitterEmbed url={url} />
     case 'reddit':
-      return <RedditEmbed subreddit={match[1]} postId={match[2]} url={url} />
+      return <RedditEmbed subreddit={match[1]} url={url} />
     case 'github_repo':
       return <GitHubRepoEmbed repo={match[1]} url={url} />
     case 'github_gist':
-      return <GitHubGistEmbed gistPath={match[1]} url={url} />
+      return <GitHubGistEmbed url={url} />
     case 'codepen':
       return <CodePenEmbed user={match[1]} penId={match[2]} url={url} />
     case 'tiktok':
-      return <TikTokEmbed user={match[1]} videoId={match[2]} url={url} />
+      return <TikTokEmbed user={match[1]} url={url} />
     case 'imgur':
       return <ImgurEmbed id={match[1]} url={url} />
     case 'steam':
       return <SteamEmbed appId={match[1]} url={url} />
-    case 'tenor':
-      return <TenorEmbed id={match[1]} url={url} />
+    case 'kiply':
+      return <KiplyEmbed id={match[1]} url={url} />
     case 'giphy':
       return <GiphyEmbed id={match[1]} url={url} />
+    case 'direct_image':
+      return <DirectImageEmbed url={url} />
+    case 'direct_video':
+      return <DirectVideoEmbed url={url} />
+    case 'direct_audio':
+      return <DirectAudioEmbed url={url} />
+    case 'generic_link':
     default:
-      return null
+      return <GenericWebsiteEmbed url={url} />
   }
 }
 

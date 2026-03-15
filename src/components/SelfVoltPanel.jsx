@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
-import { Server, Plus, Trash2, RefreshCw, CheckCircle, XCircle, Settings, Globe, Lock, Mic, FileText, Database, Key, Shield, Users } from 'lucide-react'
+import { ServerStackIcon as ServerStack, ServerIcon, PlusIcon, TrashIcon, ArrowPathIcon, CheckCircleIcon, XCircleIcon, Cog6ToothIcon, GlobeAltIcon, LockClosedIcon, MicrophoneIcon, DocumentTextIcon, CircleStackIcon, KeyIcon, ShieldCheckIcon, UsersIcon } from "@heroicons/react/24/outline";
+import { Server, Plus, Trash, RefreshCw, CheckCircle, XCircle, Settings, Globe, Lock, Mic, FileText, Database, Key, Shield, Users } from 'lucide-react'
 import { useSelfVolt } from '../contexts/SelfVoltContext'
 import { useTranslation } from '../hooks/useTranslation'
 import './SelfVoltPanel.css'
@@ -7,7 +8,7 @@ import './SelfVoltPanel.css'
 const SelfVoltPanel = () => {
   const { t } = useTranslation()
   const { 
-    selfVolts = [], 
+    selfVolts, 
     loading, 
     addSelfVolt, 
     updateSelfVolt, 
@@ -15,6 +16,8 @@ const SelfVoltPanel = () => {
     testSelfVolt,
     syncSelfVoltServers 
   } = useSelfVolt()
+
+  const voltsList = Array.isArray(selfVolts) ? selfVolts : []
 
   const [showAddModal, setShowAddModal] = useState(false)
   const [editingVolt, setEditingVolt] = useState(null)
@@ -96,21 +99,21 @@ const SelfVoltPanel = () => {
 
       <div className="self-volt-layout">
         <div className="self-volt-list">
-          {selfVolts.length === 0 && !loading && (
+          {voltsList.length === 0 && !loading && (
             <div className="self-volt-empty">
-              <Server size={48} />
+              <ServerStack size={48} />
               <p>{t('selfvolt.noServers', 'No self-hosted servers added yet')}</p>
               <button 
                 className="btn btn-secondary"
                 onClick={() => setShowAddModal(true)}
               >
-                <Plus size={16} />
+<Plus size={16} />
                 {t('selfvolt.addFirst', 'Add Your First Self-Volt')}
               </button>
             </div>
           )}
 
-          {selfVolts.map(volt => (
+          {voltsList.map(volt => (
             <div 
               key={volt.id} 
               className={`self-volt-card ${volt.status} ${selectedVolt?.id === volt.id ? 'selected' : ''}`}
@@ -121,7 +124,7 @@ const SelfVoltPanel = () => {
                   {volt.icon ? (
                     <img src={volt.icon} alt={volt.name} />
                   ) : (
-                    <Server size={24} />
+                    <ServerStack size={24} />
                   )}
                 </div>
                 <div className="self-volt-info">
@@ -139,7 +142,7 @@ const SelfVoltPanel = () => {
 
               {volt.servers && volt.servers.length > 0 && (
                 <div className="self-volt-servers-count">
-                  <Server size={14} />
+                  <ServerStack size={14} />
                   <span>{volt.servers.length} {volt.servers.length !== 1 ? t('selfvolt.servers', 'servers') : t('selfvolt.server', 'server')}</span>
                 </div>
               )}
@@ -171,7 +174,7 @@ const SelfVoltPanel = () => {
                   onClick={() => handleDelete(volt.id)}
                   title={t('common.delete', 'Delete')}
                 >
-                  <Trash2 size={14} />
+                  <Trash size={14} />
                 </button>
               </div>
             </div>
@@ -191,22 +194,22 @@ const SelfVoltPanel = () => {
               <h4>{t('selfvolt.serverFeatures', 'Server Features')}</h4>
               <div className="features-grid">
                 <div className="feature-item">
-                  <Shield size={20} />
+                  <ShieldCheckIcon size={20} />
                   <span>{t('selfvolt.e2eEncryption', 'End-to-End Encryption')}</span>
                   <span className="feature-status enabled">{t('common.enabled', 'Enabled')}</span>
                 </div>
                 <div className="feature-item">
-                  <Mic size={20} />
+                  <MicrophoneIcon size={20} />
                   <span>{t('selfvolt.voiceChannels', 'Voice Channels')}</span>
                   <span className="feature-status enabled">{t('common.enabled', 'Enabled')}</span>
                 </div>
                 <div className="feature-item">
-                  <FileText size={20} />
+                  <DocumentTextIcon size={20} />
                   <span>{t('selfvolt.fileStorage', 'File Storage')}</span>
                   <span className="feature-status enabled">{t('common.enabled', 'Enabled')}</span>
                 </div>
                 <div className="feature-item">
-                  <Database size={20} />
+                  <CircleStackIcon size={20} />
                   <span>{t('selfvolt.localStorage', 'Local Storage')}</span>
                   <span className="feature-status enabled">JSON</span>
                 </div>
@@ -223,7 +226,7 @@ const SelfVoltPanel = () => {
                         {server.icon ? (
                           <img src={server.icon} alt={server.name} />
                         ) : (
-                          <Server size={16} />
+                          <ServerStack size={16} />
                         )}
                       </div>
                       <div className="server-info">
@@ -261,7 +264,7 @@ const SelfVoltPanel = () => {
                     }
                   }}
                 >
-                  <Key size={16} />
+                  <KeyIcon size={16} />
                   {t('selfvolt.rotateKeys', 'Rotate Encryption Keys')}
                 </button>
                 <button 
@@ -270,7 +273,7 @@ const SelfVoltPanel = () => {
                     alert(t('selfvolt.manageMembersNotImplemented', 'Manage Members: This would open a member management interface'))
                   }}
                 >
-                  <Users size={16} />
+                  <UsersIcon size={16} />
                   {t('selfvolt.manageMembers', 'Manage Members')}
                 </button>
               </div>
@@ -285,7 +288,7 @@ const SelfVoltPanel = () => {
             <div className="modal-header">
               <h3>{t('selfvolt.addServerTitle', 'Add Self-Volt Server')}</h3>
               <button className="modal-close" onClick={() => setShowAddModal(false)}>
-                <XCircle size={20} />
+                <XCircleIcon size={20} />
               </button>
             </div>
             <form onSubmit={handleAdd} className="self-volt-form">
@@ -331,7 +334,7 @@ const SelfVoltPanel = () => {
                   {t('common.cancel', 'Cancel')}
                 </button>
                 <button type="submit" className="btn btn-primary">
-                  <Plus size={16} />
+<Plus size={16} />
                   {t('selfvolt.addServer', 'Add Server')}
                 </button>
               </div>
@@ -346,7 +349,7 @@ const SelfVoltPanel = () => {
             <div className="modal-header">
               <h3>{t('selfvolt.editServerTitle', 'Edit Self-Volt Server')}</h3>
               <button className="modal-close" onClick={() => setEditingVolt(null)}>
-                <XCircle size={20} />
+                <XCircleIcon size={20} />
               </button>
             </div>
             <form onSubmit={handleUpdate} className="self-volt-form">

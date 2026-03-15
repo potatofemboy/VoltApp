@@ -1,8 +1,22 @@
 import React from 'react'
 import { useAvatar } from '../hooks/useAvatar'
+import { getStoredServer } from '../services/serverConfig'
 
-const Avatar = ({ src, alt, fallback, className = '', size = 40, onClick, style = {} }) => {
-  const { avatarSrc, loading } = useAvatar(src)
+const Avatar = ({ src, alt, fallback, className = '', size = 40, onClick, style = {}, userId }) => {
+  const currentServer = getStoredServer()
+  const apiUrl = currentServer?.apiUrl || ''
+  const imageApiUrl = currentServer?.imageApiUrl || apiUrl
+  
+  let fallbackUrls = []
+  if (!src && userId) {
+    const encodedId = encodeURIComponent(userId)
+    const nativeUrl = apiUrl ? `${apiUrl}/api/images/users/${encodedId}/profile` : null
+    const externalUrl = imageApiUrl ? `${imageApiUrl}/api/images/users/${encodedId}/profile` : null
+    if (nativeUrl) fallbackUrls.push(nativeUrl)
+    if (externalUrl && externalUrl !== nativeUrl) fallbackUrls.push(externalUrl)
+  }
+  
+  const { avatarSrc, loading } = useAvatar(src, fallbackUrls)
 
   const avatarStyle = {
     width: size,

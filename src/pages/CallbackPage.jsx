@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useTranslation } from '../hooks/useTranslation'
-import { Loader2 } from 'lucide-react'
+import { ArrowPathIcon } from '@heroicons/react/24/outline'
 
 const CallbackPage = () => {
   const { t } = useTranslation()
@@ -10,9 +10,12 @@ const CallbackPage = () => {
   const navigate = useNavigate()
   const { handleCallback } = useAuth()
   const [error, setError] = useState(null)
+  const hasProcessedRef = useRef(false)
 
   useEffect(() => {
     const processCallback = async () => {
+      if (hasProcessedRef.current) return
+      hasProcessedRef.current = true
       const code = searchParams.get('code')
       const verifier = sessionStorage.getItem('pkce_verifier')
 
@@ -28,6 +31,7 @@ const CallbackPage = () => {
 
       try {
         await handleCallback(code, verifier)
+        sessionStorage.removeItem('pkce_verifier')
         navigate('/chat')
       } catch (err) {
         setError(err.message || t('callback.authFailed', 'Authentication failed'))
@@ -49,7 +53,7 @@ const CallbackPage = () => {
     }}>
       {error ? (
         <>
-          <div style={{ color: '#ed4245', fontSize: '18px' }}>
+          <div style={{ color: 'var(--volt-danger)', fontSize: '18px' }}>
             {error}
           </div>
           <button 
@@ -61,7 +65,7 @@ const CallbackPage = () => {
         </>
       ) : (
         <>
-          <Loader2 size={48} className="pulse" />
+          <ArrowPathIcon size={48} className="pulse" />
           <div>{t('callback.completingAuth', 'Completing authentication...')}</div>
         </>
       )}

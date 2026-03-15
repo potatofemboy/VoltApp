@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
-import { X, Hash, Volume2, Folder } from 'lucide-react'
+import { XMarkIcon, HashtagIcon, SpeakerWaveIcon, FolderIcon } from "@heroicons/react/24/outline";
+import { X, Hash, Volume2, Folder, Megaphone, MessageSquare, Image, Video } from 'lucide-react'
 import { apiService } from '../../services/apiService'
 import { useTranslation } from '../../hooks/useTranslation'
 import './Modal.css'
@@ -43,7 +44,7 @@ const CreateChannelModal = ({ serverId, categories = [], onClose, onSuccess }) =
         <div className="modal-header">
           <h2>{t('modals.createChannel')}</h2>
           <button className="modal-close" onClick={onClose}>
-            <X size={24} />
+            <XMarkIcon size={24} />
           </button>
         </div>
 
@@ -68,10 +69,54 @@ const CreateChannelModal = ({ serverId, categories = [], onClose, onSuccess }) =
                   className={`channel-type-btn ${channelType === 'voice' ? 'active' : ''}`}
                   onClick={() => setChannelType('voice')}
                 >
-                  <Volume2 size={20} />
+                  <SpeakerWaveIcon size={20} />
                   <div>
                     <div className="type-label">{t('modals.voice')}</div>
                     <div className="type-description">{t('modals.voiceDesc')}</div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  className={`channel-type-btn ${channelType === 'announcement' ? 'active' : ''}`}
+                  onClick={() => setChannelType('announcement')}
+                >
+                  <Megaphone size={20} />
+                  <div>
+                    <div className="type-label">{t('modals.announcement')}</div>
+                    <div className="type-description">{t('modals.announcementDesc')}</div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  className={`channel-type-btn ${channelType === 'forum' ? 'active' : ''}`}
+                  onClick={() => setChannelType('forum')}
+                >
+                  <MessageSquare size={20} />
+                  <div>
+                    <div className="type-label">{t('modals.forum')}</div>
+                    <div className="type-description">{t('modals.forumDesc')}</div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  className={`channel-type-btn ${channelType === 'media' ? 'active' : ''}`}
+                  onClick={() => setChannelType('media')}
+                >
+                  <Image size={20} />
+                  <div>
+                    <div className="type-label">{t('modals.media')}</div>
+                    <div className="type-description">{t('modals.mediaDesc')}</div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  className={`channel-type-btn ${channelType === 'video' ? 'active' : ''}`}
+                  onClick={() => setChannelType('video')}
+                >
+                  <Video size={20} />
+                  <div>
+                    <div className="type-label">{t('modals.video')}</div>
+                    <div className="type-description">{t('modals.videoDesc')}</div>
                   </div>
                 </button>
               </div>

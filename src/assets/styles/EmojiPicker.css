@@ -1,20 +1,60 @@
 .emoji-picker {
-  position: absolute;
-  bottom: 100%;
-  right: 20px;
-  margin-bottom: 8px;
   width: 320px;
+  height: 360px;
+  min-width: 280px;
+  min-height: 300px;
+  max-width: 500px;
+  max-height: 500px;
   background: var(--volt-bg-secondary);
   border: 1px solid var(--volt-border);
   border-radius: 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
   overflow: hidden;
-  z-index: 100;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  resize: both;
+  overflow: auto;
+}
+
+.emoji-picker.resizing {
+  user-select: none;
+  pointer-events: none;
+}
+
+.emoji-picker-resize-handle {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--volt-text-muted);
+  cursor: se-resize;
+  opacity: 0.5;
+  transition: opacity 0.2s;
+  z-index: 10;
+}
+
+.emoji-picker:hover .emoji-picker-resize-handle {
+  opacity: 1;
+}
+
+/* Default position when used in chat input (bottom placement) */
+.emoji-picker-container .emoji-picker,
+.chat-input-container .emoji-picker {
+  position: absolute;
+  bottom: 100%;
+  right: 20px;
+  margin-bottom: 8px;
 }
 
 .emoji-picker-header {
   padding: 12px;
   border-bottom: 1px solid var(--volt-border);
+  flex-shrink: 0;
 }
 
 .emoji-search {
@@ -173,6 +213,18 @@
   color: var(--volt-text-muted);
 }
 
+.emoji-search-provider {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #f3d33b;
+  color: #141414;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .clear-search {
   background: none;
   border: none;
@@ -188,8 +240,10 @@
 }
 
 .emoji-picker-content {
-  max-height: 280px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .emoji-section {
@@ -222,8 +276,10 @@
 
 /* ── GIF scroll area (no max-height — let content area handle scroll) ── */
 .gif-scroll-area {
+  position: relative;
   overflow-y: auto;
   max-height: 280px;
+  padding-bottom: 28px;
 }
 
 .gif-grid {
@@ -279,7 +335,7 @@
 }
 
 .gif-fav-btn.active {
-  color: #f87171;
+  color: var(--volt-danger);
   background: rgba(0,0,0,0.7);
 }
 
@@ -318,6 +374,22 @@
   color: var(--volt-text-muted);
 }
 
+.gif-provider-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 8px 2px;
+  pointer-events: none;
+}
+
+.gif-provider-logo {
+  height: 14px;
+  width: auto;
+  opacity: 0.92;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.18));
+}
+
 .gif-end {
   text-align: center;
   padding: 8px;
@@ -338,8 +410,10 @@
 }
 
 .emoji-picker-content {
-  max-height: 310px;
-  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
 }

@@ -1,5 +1,14 @@
 import axios from 'axios'
 import { getStoredServer } from './serverConfig'
+import {
+  getPreferredAuthToken,
+  markLocalTokenAccepted
+} from './authToken'
+import {
+  clearSessionStorage,
+  getStoredAccessToken,
+  getStoredRefreshToken
+} from './authSession'
 
 function getBaseURL() {
   const server = getStoredServer()
@@ -10,27 +19,96 @@ function getBaseURL() {
 }
 
 const api = axios.create({
+  timeout: 15000,
   headers: {
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-cache, no-store, must-revalidate, proxy-revalidate, max-age=0',
+    'Pragma': 'no-cache',
+    'Expires': '0',
+    'Surrogate-Control': 'no-store'
   }
 })
 
+const RETRYABLE_METHODS = new Set(['get', 'head', 'options', 'delete'])
+const MAX_RETRIES = 2
+
+const shouldRetryRequest = (error) => {
+  const config = error?.config || {}
+  const method = String(config.method || 'get').toLowerCase()
+  const status = error?.response?.status || 0
+  const networkFailure = !error?.response && (
+    error?.code === 'ECONNABORTED' ||
+    error?.message?.includes('Network Error') ||
+    error?.message?.includes('timeout')
+  )
+
+  if (networkFailure) return true
+  if (status >= 500 && RETRYABLE_METHODS.has(method)) return true
+  return false
+}
+
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+
 api.interceptors.request.use((config) => {
   config.baseURL = getBaseURL()
-  const token = localStorage.getItem('access_token')
+  config.headers = config.headers || {}
+  
+  config.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate, proxy-revalidate, max-age=0'
+  config.headers['Pragma'] = 'no-cache'
+  config.headers['Expires'] = '0'
+  config.headers['Surrogate-Control'] = 'no-store'
+  
+  const method = String(config.method || 'get').toLowerCase()
+
+  if (!config.headers['Content-Type'] && !(config.data instanceof FormData)) {
+    config.headers['Content-Type'] = 'application/json'
+  }
+
+  if (['post', 'put', 'patch'].includes(method) && config.data === undefined && config.headers['Content-Type'] === 'application/json') {
+    config.data = {}
+  }
+
+  if (method === 'get' && config.params) {
+    config.params['_t'] = Date.now()
+  } else if (method === 'get') {
+    config.params = { ...config.params, '_t': Date.now() }
+  }
+
+  const token = getPreferredAuthToken()
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
+    config.__authTokenSource = 'local'
+    config.__usedLocalToken = true
   }
   return config
 })
 
 api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('user_data')
-      window.location.href = '/login'
+  (response) => {
+    if (response?.config?.__authTokenSource === 'local') {
+      markLocalTokenAccepted()
+    }
+    return response
+  },
+  async (error) => {
+    const config = error?.config || null
+
+    if (config && shouldRetryRequest(error)) {
+      config.__retryCount = (config.__retryCount || 0) + 1
+      if (config.__retryCount <= MAX_RETRIES) {
+        await wait(300 * config.__retryCount)
+        return api.request(config)
+      }
+    }
+
+    const status = error.response?.status
+
+    if (status === 401) {
+      const hasRefreshToken = !!getStoredRefreshToken()
+      if (!hasRefreshToken) {
+        clearSessionStorage()
+        window.location.href = '/login'
+      }
     }
     return Promise.reject(error)
   }
@@ -45,6 +123,11 @@ export const apiService = {
   createServer: (data) => api.post('/servers', data),
   updateServer: (serverId, data) => api.put(`/servers/${serverId}`, data),
   deleteServer: (serverId) => api.delete(`/servers/${serverId}`),
+  getServerEvents: (serverId) => api.get(`/servers/${serverId}/events`),
+  createServerEvent: (serverId, data) => api.post(`/servers/${serverId}/events`, data),
+  updateServerEvent: (serverId, eventId, data) => api.put(`/servers/${serverId}/events/${eventId}`, data),
+  deleteServerEvent: (serverId, eventId) => api.delete(`/servers/${serverId}/events/${eventId}`),
+  getUpcomingEvents: (limit = 20) => api.get('/events/upcoming', { params: { limit } }),
   
   // Server Invites
   getServerInvites: (serverId) => api.get(`/servers/${serverId}/invites`),
@@ -83,6 +166,28 @@ export const apiService = {
   updateChannelOrder: (serverId, channelIds) => api.put(`/servers/${serverId}/channels/order`, { channelIds }),
   moveChannel: (channelId, data) => api.put(`/channels/${channelId}/move`, data),
   
+  // Channel Permissions
+  getChannelPermissions: (channelId) => api.get(`/channels/${channelId}/permissions`).then(res => res.data),
+  updateChannelPermissions: (channelId, permissions) => api.put(`/channels/${channelId}/permissions`, permissions).then(res => res.data),
+  checkChannelAccess: (channelId) => api.get(`/channels/${channelId}/access-check`),
+  
+  // Channel Members (for permission-based member list)
+  getChannelMembers: (serverId, channelId) => api.get(`/servers/${serverId}/channels/${channelId}/members`),
+
+  // Activities / Activity Apps
+  getActivitiesCatalog: () => api.get('/activities/catalog'),
+  getPublicActivitiesCatalog: () => api.get('/activities/public'),
+  getActivitiesSdkManifest: () => api.get('/activities/sdk/manifest'),
+  getMyActivityApps: () => api.get('/activities/apps/my'),
+  createActivityApp: (data) => api.post('/activities/apps', data),
+  publishPublicActivity: (data) => api.post('/activities/publish', data),
+  rotateActivityAppSecret: (appId) => api.post(`/activities/apps/${appId}/rotate-secret`),
+  authorizeActivityApp: (params) => api.get('/activities/oauth/authorize', { params }),
+  exchangeActivityCode: (data) => api.post('/activities/oauth/token', data),
+  introspectActivityToken: (token) => api.get('/activities/oauth/me', {
+    headers: { Authorization: `Bearer ${token}` }
+  }),
+  
   // Categories
   getCategories: (serverId) => api.get(`/servers/${serverId}/categories`),
   createCategory: (serverId, data) => api.post(`/servers/${serverId}/categories`, data),
@@ -92,13 +197,15 @@ export const apiService = {
   
   // Messages
   getMessages: (channelId, params) => api.get(`/channels/${channelId}/messages`, { params }),
-  searchMessages: (channelId, query) => api.get(`/channels/${channelId}/messages/search`, { params: { q: query } }),
+  searchMessages: (channelId, query, limit = 50, offset = 0) => api.get(`/channels/${channelId}/messages/search`, { params: { q: query, limit, offset } }),
   getPinnedMessages: (channelId) => api.get(`/channels/${channelId}/pins`),
   pinMessage: (channelId, messageId) => api.put(`/channels/${channelId}/pins/${messageId}`),
   unpinMessage: (channelId, messageId) => api.delete(`/channels/${channelId}/pins/${messageId}`),
+  notifyChannelMessage: (channelId, messageId) => api.post(`/channels/${channelId}/messages/${messageId}/notify`),
   sendMessage: (channelId, data) => api.post(`/channels/${channelId}/messages`, data),
   editMessage: (messageId, content) => api.put(`/messages/${messageId}`, { content }),
   deleteMessage: (messageId) => api.delete(`/messages/${messageId}`),
+  bulkDeleteMessages: (channelId, messageIds) => api.post(`/channels/${channelId}/messages/bulk-delete`, { messageIds }),
   
   // Direct Messages
   getDirectMessages: (search) => api.get('/dms', { params: { search } }),
@@ -116,9 +223,24 @@ export const apiService = {
   searchUsers: (query) => api.get('/user/search', { params: { q: query } }),
   getUserProfile: (userId) => api.get(`/user/${userId}`),
   updateProfile: (data) => api.put('/user/profile', data),
+  uploadAvatar: async (file) => {
+    const formData = new FormData()
+    formData.append('avatar', file)
+    const response = await api.post('/user/avatar', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    return response
+  },
+  deleteAvatar: () => api.delete('/user/avatar'),
   updateStatus: (status, customStatus) => api.put('/user/status', { status, customStatus }),
   getAgeVerificationStatus: () => api.get('/user/age-verification/status'),
+  setAgeVerificationJurisdiction: (jurisdictionCode) => api.post('/user/age-verification/jurisdiction', { jurisdictionCode }),
+  selfAttestAgeVerification: (payload = {}) => api.post('/user/age-verification/self-attest', payload),
   submitAgeVerification: (payload) => api.post('/user/age-verification', payload),
+  
+  // Profile Customization & Theme
+  getProfileTheme: () => api.get('/user/profile/theme'),
+  updateProfileTheme: (data) => api.put('/user/profile/theme', data),
   
   // Friends
   getFriends: () => api.get('/user/friends'),
@@ -128,8 +250,8 @@ export const apiService = {
   getFriendRequests: () => api.get('/user/friend-requests'),
   sendFriendRequest: (username) => api.post('/user/friend-request', { username }),
   sendFriendRequestById: (userId) => api.post('/user/friend-request', { userId }),
-  acceptFriendRequest: (id) => api.post(`/user/friend-request/${id}/accept`),
-  rejectFriendRequest: (id) => api.post(`/user/friend-request/${id}/reject`),
+  acceptFriendRequest: (id) => api.post(`/user/friend-request/${id}/accept`, {}),
+  rejectFriendRequest: (id) => api.post(`/user/friend-request/${id}/reject`, {}),
   cancelFriendRequest: (id) => api.delete(`/user/friend-request/${id}`),
   cancelFriendRequestByUserId: (userId) => api.delete(`/user/friend-request/user/${userId}`),
   
@@ -151,7 +273,11 @@ export const apiService = {
         const xhr = new XMLHttpRequest()
         xhr.open('POST', `${getBaseURL()}/upload`)
         
-        const token = localStorage.getItem('access_token')
+        xhr.setRequestHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+        xhr.setRequestHeader('Pragma', 'no-cache')
+        xhr.setRequestHeader('Expires', '0')
+        
+        const token = getStoredAccessToken()
         if (token) {
           xhr.setRequestHeader('Authorization', `Bearer ${token}`)
         }
@@ -197,6 +323,14 @@ export const apiService = {
 
   getAdminStats: () => api.get('/admin/stats'),
   getAdminUsers: (params) => api.get('/admin/users', { params }),
+  getAdminOnlineUsers: () => api.get('/admin/online-users', {
+    params: { _t: Date.now() },
+    headers: { 'Cache-Control': 'no-cache' }
+  }),
+  getAdminOnlineUsersStats: () => api.get('/admin/stats/online-users', {
+    params: { _t: Date.now() },
+    headers: { 'Cache-Control': 'no-cache' }
+  }),
   getAdminUser: (userId) => api.get(`/admin/users/${userId}`),
   setUserRole: (userId, role) => api.put(`/admin/users/${userId}/role`, { role }),
   banUser: (userId, data) => api.post(`/admin/users/${userId}/ban`, data),
@@ -211,6 +345,16 @@ export const apiService = {
   unbanServer: (serverId) => api.delete(`/admin/servers/${serverId}/ban`),
   getBannedUsers: () => api.get('/admin/banned-users'),
   getBannedServers: () => api.get('/admin/banned-servers'),
+  getSafetyReports: (params) => api.get('/safety/reports', { params }),
+  getSafetyReport: (reportId) => api.get(`/safety/reports/${reportId}`),
+  submitSafetyReport: (payload) => api.post('/safety/reports', payload),
+  submitUserSafetyReport: (payload) => api.post('/safety/reports/user', payload),
+  getMySafetyReports: (params) => api.get('/safety/reports/my', { params }),
+  getMySafetyReport: (reportId) => api.get(`/safety/reports/my/${reportId}`),
+  resolveSafetyReport: (reportId, payload) => api.post(`/safety/reports/${reportId}/resolve`, payload),
+  banUserFromSafetyReport: (reportId, payload) => api.post(`/safety/reports/${reportId}/ban-user`, payload),
+  banServerFromSafetyReport: (reportId, payload) => api.post(`/safety/reports/${reportId}/ban-server`, payload),
+  deleteMessageFromSafetyReport: (reportId, payload) => api.post(`/safety/reports/${reportId}/delete-message`, payload),
   getAdminLogs: (limit) => api.get('/admin/logs', { params: { limit } }),
   getMyAdminRole: () => api.get('/admin/my-role'),
   getDiscoveryPending: () => api.get('/admin/discovery/pending'),
@@ -220,6 +364,9 @@ export const apiService = {
   removeFromDiscoveryAdmin: (serverId) => api.delete(`/admin/discovery/remove/${serverId}`),
   getPlatformHealth: () => api.get('/admin/platform/health'),
   getPlatformActivity: () => api.get('/admin/platform/activity'),
+  getMaintenanceStatus: () => api.get('/admin/maintenance'),
+  setMaintenanceWindow: (payload) => api.put('/admin/maintenance', payload),
+  clearMaintenanceWindow: () => api.delete('/admin/maintenance'),
   getAllSelfVolts: () => api.get('/admin/self-volts'),
   getSelfVoltAdmin: (voltId) => api.get(`/admin/self-volts/${voltId}`),
   deleteSelfVoltAdmin: (voltId) => api.delete(`/admin/self-volts/${voltId}`),
@@ -262,6 +409,11 @@ export const apiService = {
   getUserKeysForServer: (serverId) => api.get(`/e2e/user/keys/${serverId}`),
   backupUserKeys: (password) => api.post('/e2e/user/backup', { password }),
   restoreUserKeys: (backup, password) => api.post('/e2e/user/restore', { backup, password }),
+  syncKeyBackup: (encryptedBackup, deviceId, timestamp) => 
+    api.post('/e2e/user/backup-keys', { encryptedBackup, deviceId, timestamp }),
+  getKeyBackups: () => api.get('/e2e/user/backup-keys'),
+  getKeyBackup: (deviceId) => api.get(`/e2e/user/backup-keys/${deviceId}`),
+  deleteKeyBackup: (deviceId) => api.delete(`/e2e/user/backup-keys/${deviceId}`),
   
   getDmE2eStatus: (conversationId) => api.get(`/e2e/dm/status/${conversationId}`),
   enableDmE2e: (conversationId) => api.post(`/e2e/dm/enable/${conversationId}`),
@@ -270,6 +422,40 @@ export const apiService = {
   joinDmE2e: (conversationId, data) => api.post(`/e2e/dm/join/${conversationId}`, data),
   getDmUserKeys: (conversationId) => api.get(`/e2e/dm/user-keys/${conversationId}`),
   rotateDmE2eKeys: (conversationId) => api.post(`/e2e/dm/rotate/${conversationId}`),
+  
+  requestDmEncryption: (conversationId, mode) => api.post(`/e2e/dm/request/${conversationId}`, { mode }),
+  respondToEncryptionRequest: (conversationId, accepted, encryptedKey) => 
+    api.post(`/e2e/dm/respond/${conversationId}`, { accepted, encryptedKey }),
+  respondToDmEncryptionRequest: (conversationId, accepted, encryptedKey) =>
+    api.post(`/e2e/dm/respond/${conversationId}`, { accepted, encryptedKey }),
+  getDmPendingStatus: (conversationId) => api.get(`/e2e/dm/pending/${conversationId}`),
+  setDmMode: (conversationId, mode) => api.post(`/e2e/dm/mode/${conversationId}`, { mode }),
+  getDmMode: (conversationId) => api.get(`/e2e/dm/mode/${conversationId}`),
+  setDmMasterPassword: (conversationId, passwordHash) => 
+    api.post(`/e2e/dm/master-password/${conversationId}`, { passwordHash }),
+  encryptDmPreviousMessages: (conversationId) => 
+    api.post(`/e2e/dm/encrypt-previous/${conversationId}`),
+  getDmEncryptionStatus: (conversationId) => api.get(`/e2e/dm/encryption-status/${conversationId}`),
+  confirmDmEncryption: (conversationId, encryptedKey) => 
+    api.post(`/e2e/dm/confirm/${conversationId}`, { encryptedKey }),
+  declineDmEncryption: (conversationId) => api.post(`/e2e/dm/decline/${conversationId}`),
+  disableDmEncryption: (conversationId) => api.post(`/e2e/dm/disable/${conversationId}`),
+  disableDmEncryptionRequest: (conversationId) => api.post(`/e2e/dm/disable-request/${conversationId}`),
+  respondToDisableRequest: (conversationId, accepted) => api.post(`/e2e/dm/disable-respond/${conversationId}`, { accepted }),
+
+   getNotifications: () => api.get('/notifications'),
+   getNotificationSettings: () => api.get('/notifications'),
+  muteServer: (serverId, muted, duration) => api.post(`/notifications/server/${serverId}/mute`, { muted, duration }),
+  getServerMuteStatus: (serverId) => api.get(`/notifications/server/${serverId}/mute`),
+  muteDm: (conversationId, muted, duration) => api.post(`/notifications/dm/${conversationId}/mute`, { muted, duration }),
+  getDmMuteStatus: (conversationId) => api.get(`/notifications/dm/${conversationId}/mute`),
+  checkMuteStatus: (type, id) => api.get(`/notifications/is-muted/${type}/${id}`),
+
+  getServerE2eAutoEnrollStatus: (serverId) => api.get(`/e2e/status/${serverId}`),
+  autoEnrollServerE2e: (serverId, encryptedKey) => api.post(`/e2e/auto-enroll/${serverId}`, { encryptedKey }),
+  getServerAutoKey: (serverId) => api.get(`/e2e/auto-key/${serverId}`),
+  getServerPublicKey: (serverId) => api.get(`/e2e/public-key/${serverId}`),
+  getServerJoinInfo: (serverId) => api.get(`/e2e/join-info/${serverId}`),
 
   getSelfVolts: () => api.get('/self-volt'),
   getMySelfVolts: () => api.get('/self-volt/my'),
@@ -348,6 +534,8 @@ export const apiService = {
   storeSenderKey: (groupId, data) => api.post(`/e2e-true/groups/${groupId}/sender-keys`, data),
   distributeSenderKeys: (groupId, data) => api.post(`/e2e-true/groups/${groupId}/sender-keys/distribute`, data),
   getSenderKeys: (groupId, epoch, deviceId) => api.get(`/e2e-true/groups/${groupId}/sender-keys/${epoch}`, { params: { deviceId } }),
+  // CRITICAL: Request sender keys - server relays to existing members but never sees the keys
+  requestSenderKeys: (groupId, deviceId) => api.post(`/e2e-true/groups/${groupId}/sender-keys/request`, { deviceId }),
   getQueuedKeyUpdates: (deviceId) => api.get('/e2e-true/queue/key-updates', { params: { deviceId } }),
   getQueuedMessages: (deviceId, limit) => api.get('/e2e-true/queue/messages', { params: { deviceId, limit } }),
   computeSafetyNumber: (myKey, theirKey) => api.post('/e2e-true/safety-number', { myIdentityKey: myKey, theirIdentityKey: theirKey }),
@@ -359,5 +547,85 @@ export const apiService = {
   markAllSystemMessagesRead: () => api.post('/system/messages/read-all'),
   deleteSystemMessage: (id) => api.delete(`/system/messages/${id}`),
   clearSystemMessages: () => api.delete('/system/messages'),
-  sendSystemMessage: (data) => api.post('/system/send', data)
+  sendSystemMessage: (data) => api.post('/system/send', data),
+
+  // Server Audit Logs
+  getAuditLogs: (serverId, params) => api.get(`/servers/${serverId}/audit-logs`, { params }),
+
+  // Server Bans Management
+  getServerBans: (serverId, params) => api.get(`/servers/${serverId}/bans`, { params }),
+  unbanUser: (serverId, userId) => api.delete(`/servers/${serverId}/bans/${userId}`),
+
+  // AutoMod
+  getAutoModConfig: (serverId) => api.get(`/servers/${serverId}/automod`),
+  updateAutoModConfig: (serverId, config) => api.put(`/servers/${serverId}/automod`, config),
+  toggleAutoMod: (serverId, enabled) => api.post(`/servers/${serverId}/automod/toggle`, { enabled }),
+  toggleAutoModTestingMode: (serverId, enabled) => api.post(`/servers/${serverId}/automod/testing-mode`, { enabled }),
+  
+  // AutoMod Word Filter
+  updateWordFilter: (serverId, config) => api.put(`/servers/${serverId}/automod/word-filter`, config),
+  addAutoModWord: (serverId, word) => api.post(`/servers/${serverId}/automod/word-filter/words`, { word }),
+  removeAutoModWord: (serverId, word) => api.delete(`/servers/${serverId}/automod/word-filter/words/${encodeURIComponent(word)}`),
+  
+  // AutoMod Spam Protection
+  updateSpamProtection: (serverId, config) => api.put(`/servers/${serverId}/automod/spam-protection`, config),
+  
+  // AutoMod Link Block
+  updateLinkBlock: (serverId, config) => api.put(`/servers/${serverId}/automod/link-block`, config),
+  addAllowedDomain: (serverId, domain) => api.post(`/servers/${serverId}/automod/link-block/allowlist`, { domain }),
+  removeAllowedDomain: (serverId, domain) => api.delete(`/servers/${serverId}/automod/link-block/allowlist/${encodeURIComponent(domain)}`),
+  
+  // AutoMod Mention Spam
+  updateMentionSpam: (serverId, config) => api.put(`/servers/${serverId}/automod/mention-spam`, config),
+  
+  // AutoMod Caps Filter
+  updateCapsFilter: (serverId, config) => api.put(`/servers/${serverId}/automod/caps-filter`, config),
+  
+  // AutoMod Invite Block
+  updateInviteBlock: (serverId, config) => api.put(`/servers/${serverId}/automod/invite-block`, config),
+  
+  // AutoMod Custom Rules
+  getAutoModCustomRules: (serverId) => api.get(`/servers/${serverId}/automod/custom-rules`),
+  addAutoModCustomRule: (serverId, rule) => api.post(`/servers/${serverId}/automod/custom-rules`, rule),
+  updateAutoModCustomRule: (serverId, ruleId, rule) => api.put(`/servers/${serverId}/automod/custom-rules/${ruleId}`, rule),
+  removeAutoModCustomRule: (serverId, ruleId) => api.delete(`/servers/${serverId}/automod/custom-rules/${ruleId}`),
+  
+  // AutoMod Exemptions
+  getAutoModExemptions: (serverId) => api.get(`/servers/${serverId}/automod/exemptions`),
+  addAutoModExemption: (serverId, exemption) => api.post(`/servers/${serverId}/automod/exemptions`, exemption),
+  removeAutoModExemption: (serverId, exemptionId) => api.delete(`/servers/${serverId}/automod/exemptions/${exemptionId}`),
+  
+  // AutoMod Warnings
+  getAutoModWarnings: (serverId, params) => api.get(`/servers/${serverId}/automod/warnings`, { params }),
+  clearAutoModWarnings: (serverId, userId) => api.delete(`/servers/${serverId}/automod/warnings/${userId}`),
+
+  // User Preferences & Customization (New Features)
+  getUserPreferences: () => api.get('/users/me/preferences'),
+  updateUserPreferences: (prefs) => api.put('/users/me/preferences', prefs),
+  getUserActivity: (userId) => api.get(`/users/${userId}/activity`),
+  getUserStats: (userId) => api.get(`/users/${userId}/stats`),
+  getProfileCustomization: (userId) => api.get(`/users/${userId}/customization`),
+  updateProfileCustomization: (userId, data) => api.put(`/users/${userId}/customization`, data),
+  
+  // Theme & Appearance
+  getSavedThemes: () => api.get('/users/me/themes'),
+  saveTheme: (theme) => api.post('/users/me/themes', theme),
+  deleteTheme: (themeId) => api.delete(`/users/me/themes/${themeId}`),
+  setActiveTheme: (themeId) => api.put('/users/me/themes/active', { themeId }),
+  
+  // Profile Comments
+  getProfileComments: (userId, params) => api.get(`/users/${userId}/comments`, { params }),
+  addProfileComment: (userId, content) => api.post(`/users/${userId}/comments`, { content }),
+  deleteProfileComment: (commentId) => api.delete(`/users/comments/${commentId}`),
+  likeProfileComment: (commentId) => api.post(`/users/comments/${commentId}/like`),
+  unlikeProfileComment: (commentId) => api.delete(`/users/comments/${commentId}/like`),
+
+  // Discord Import
+  importDiscordTemplate: (templateCode, serverId) => api.post('/import/discord/template', { templateCode, serverId }),
+  importDiscordData: (templateData, serverId) => api.post('/import/discord/import', { templateData, serverId }),
+
+  // File Upload
+  uploadFile: (serverId, formData, options = {}) => api.post(`/upload/file?serverId=${serverId}&channelId=${options.channelId || ''}&type=${options.type || 'file'}`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
 }

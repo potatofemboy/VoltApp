@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Plus, Zap, Users, Settings, LogIn, MoreHorizontal, Copy, Shield, LogOut, Compass } from 'lucide-react'
+import { PlusIcon, UsersIcon, CogIcon, ArrowRightOnRectangleIcon, EllipsisHorizontalIcon, ClipboardDocumentIcon, ShieldCheckIcon, GlobeAmericasIcon, BellIcon, BellSlashIcon, FlagIcon, CalendarDaysIcon } from '@heroicons/react/24/outline'
 import { useTranslation } from '../hooks/useTranslation'
 import { useAuth } from '../contexts/AuthContext'
 import CreateServerModal from './modals/CreateServerModal'
@@ -7,21 +7,62 @@ import JoinServerModal from './modals/JoinServerModal'
 import ContextMenu from './ContextMenu'
 import { apiService } from '../services/apiService'
 import { getStoredServer } from '../services/serverConfig'
+import { settingsService } from '../services/settingsService'
+import { VoltageLogo } from './LoadingScreen'
+import Avatar from './Avatar'
 import '../assets/styles/ServerSidebar.css'
 
-const ServerSidebar = ({ servers, currentServerId, onServerChange, onCreateServer, onOpenSettings, onOpenCreate, onOpenJoin, onOpenServerSettings, onLeaveServer, onOpenAdmin, isAdmin, friendRequestCount = 0, dmNotifications = [], serverUnreadCounts = {}, onDMClick }) => {
+const ServerSidebar = ({ servers, currentServerId, onServerChange, onCreateServer, onOpenSettings, onOpenCreate, onOpenJoin, onOpenServerSettings, onLeaveServer, onOpenAdmin, isAdmin, friendRequestCount = 0, dmNotifications = [], serverUnreadCounts = {}, serverEventsMeta = {}, onDMClick }) => {
   const { user } = useAuth()
   const { t } = useTranslation()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showJoinModal, setShowJoinModal] = useState(false)
   const [contextMenu, setContextMenu] = useState(null)
+  const [mutedServers, setMutedServers] = useState({})
 
   const server = getStoredServer()
-  const imageApiUrl = server?.imageApiUrl || server?.apiUrl || ''
-  const isVoltageServer = server?.name?.toLowerCase() === 'voltage'
-  const showAdminPanel = !isVoltageServer || isAdmin || server?.ownerId === user?.id
+  const showAdminPanel = Boolean(isAdmin || server?.ownerId === user?.id)
 
-  const totalNotifications = friendRequestCount + dmNotifications.length
+  const dmNotificationCount = Array.isArray(dmNotifications) ? dmNotifications.length : Number(dmNotifications) || 0
+  const totalNotifications = friendRequestCount + dmNotificationCount
+  const pinnedDmNotifications = Array.isArray(dmNotifications) ? dmNotifications.slice(0, 4) : []
+
+  React.useEffect(() => {
+    loadMuteStatus()
+  }, [])
+
+  const loadMuteStatus = async () => {
+    const cachedSettings = settingsService.getSettings()
+    if (cachedSettings?.serverMutes && Object.keys(cachedSettings.serverMutes).length > 0) {
+      setMutedServers(cachedSettings.serverMutes)
+    }
+    try {
+      const res = await apiService.getNotificationSettings()
+      const muted = {}
+      ;(res.data?.serverMutes || []).forEach(m => {
+        if (m.serverId && (!m.expiresAt || new Date(m.expiresAt) > new Date())) {
+          muted[m.serverId] = true
+        }
+      })
+      setMutedServers(muted)
+      settingsService.saveSettings({ ...cachedSettings, serverMutes: muted })
+    } catch (err) {
+      console.error('Failed to load mute status:', err)
+    }
+  }
+
+  const handleMuteServer = async (server, mute) => {
+    try {
+      await apiService.muteServer(server.id, mute)
+      const newMutedServers = { ...mutedServers, [server.id]: mute }
+      setMutedServers(newMutedServers)
+      const settings = settingsService.getSettings()
+      settingsService.saveSettings({ ...settings, serverMutes: newMutedServers })
+      setContextMenu(null)
+    } catch (err) {
+      console.error('Failed to toggle mute:', err)
+    }
+  }
 
   const handleLeaveServer = async (server) => {
     if (window.confirm(t('servers.leaveConfirm').replace('{name}', server.name))) {
@@ -40,6 +81,27 @@ const ServerSidebar = ({ servers, currentServerId, onServerChange, onCreateServe
     }
   }
 
+  const handleReportServer = async (targetServer) => {
+    if (!targetServer?.id) return
+    const reason = window.prompt('Report this server. What happened?')
+    if (!reason || reason.trim().length < 3) return
+
+    try {
+      await apiService.submitUserSafetyReport({
+        contextType: 'server',
+        reportType: 'user_report',
+        accusedUserId: targetServer.ownerId || null,
+        serverId: targetServer.id,
+        serverName: targetServer.name,
+        reason: reason.trim()
+      })
+      window.alert('Server report sent. Thank you.')
+    } catch (err) {
+      console.error('Failed to submit server report:', err)
+      window.alert(err?.response?.data?.error || 'Failed to submit report')
+    }
+  }
+
   return (
     <>
       <div className="server-sidebar">
@@ -49,7 +111,7 @@ const ServerSidebar = ({ servers, currentServerId, onServerChange, onCreateServe
             onClick={() => onServerChange('home')}
             title={t('nav.chat')}
           >
-            <Zap size={28} />
+            <VoltageLogo size={28} />
           </button>
 
           <button 
@@ -57,55 +119,99 @@ const ServerSidebar = ({ servers, currentServerId, onServerChange, onCreateServe
             onClick={() => onServerChange('friends')}
             title={t('nav.friends')}
           >
-            <Users size={28} />
+            <UsersIcon size={28} />
             {totalNotifications > 0 && (
               <div className="friends-notification-badge">
-                {dmNotifications.length > 0 ? (
-                  dmNotifications.slice(0, 3).map((dm, idx) => (
-                    <img 
-                      key={dm.id || idx}
-                      src={dm.recipient?.avatar || `${imageApiUrl}/api/images/users/${dm.recipient?.id}/profile`}
-                      alt=""
-                      className="notification-avatar"
-                      style={{ zIndex: 3 - idx }}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onDMClick?.(dm.id, dm.recipient)
-                      }}
-                    />
-                  ))
-                ) : (
-                  <span>{friendRequestCount}</span>
-                )}
+                <span>{totalNotifications > 99 ? '99+' : totalNotifications}</span>
               </div>
             )}
           </button>
+
+          {pinnedDmNotifications.length > 0 && (
+            <div className="server-dm-strip" aria-label={t('dm.title', 'Direct Messages')}>
+              {pinnedDmNotifications.map((conversation) => {
+                const recipient = conversation.recipient || null
+                const unreadCount = Number(conversation.unreadCount) || 0
+                const label = recipient?.displayName || recipient?.username || conversation.groupName || conversation.title || t('dm.title', 'Direct Messages')
+                const initials = label
+                  .split(' ')
+                  .map((part) => part[0])
+                  .join('')
+                  .slice(0, 2)
+                  .toUpperCase()
+
+                const handleOpenDm = () => {
+                  if (recipient && onDMClick) {
+                    onDMClick(conversation.id, recipient)
+                    return
+                  }
+                  onServerChange?.('dms')
+                }
+
+                return (
+                  <button
+                    key={conversation.id}
+                    className={`server-dm-icon ${currentServerId === 'dms' ? 'active' : ''}`}
+                    onClick={handleOpenDm}
+                    title={label}
+                    type="button"
+                  >
+                    {recipient ? (
+                      <Avatar src={recipient.avatar} fallback={label} size={26} userId={recipient.id} />
+                    ) : (
+                      <span className="server-dm-acronym">{initials || 'DM'}</span>
+                    )}
+                    {recipient?.status && (
+                      <span className={`server-dm-status ${recipient.status}`} />
+                    )}
+                    {unreadCount > 0 && (
+                      <span className="server-dm-badge">
+                        {unreadCount > 99 ? '99+' : unreadCount}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+              {dmNotifications.length > pinnedDmNotifications.length && (
+                <button
+                  className={`server-dm-more ${currentServerId === 'dms' ? 'active' : ''}`}
+                  onClick={() => onServerChange?.('dms')}
+                  title={t('dm.title', 'Direct Messages')}
+                  type="button"
+                >
+                  +{dmNotifications.length - pinnedDmNotifications.length}
+                </button>
+              )}
+            </div>
+          )}
 
           <button 
             className={`server-icon discovery-icon ${currentServerId === 'discovery' ? 'active' : ''}`}
             onClick={() => onServerChange('discovery')}
             title={t('discovery.title')}
           >
-            <Compass size={28} />
+            <GlobeAmericasIcon size={28} />
           </button>
 
-          <button 
-            className="server-icon admin-icon"
-            onClick={onOpenAdmin}
-            title={t('misc.adminPanel')}
-            style={showAdminPanel ? undefined : { display: 'none' }}
-          >
-            <Shield size={28} />
-          </button>
+          {showAdminPanel && (
+            <button 
+              className="server-icon admin-icon"
+              onClick={onOpenAdmin}
+              title={t('misc.adminPanel')}
+            >
+              <ShieldCheckIcon size={28} />
+            </button>
+          )}
           
           <div className="server-divider"></div>
           
           {servers.map(server => {
             const unreadCount = serverUnreadCounts[server.id] || 0
+            const eventMeta = serverEventsMeta?.[server.id] || null
             return (
             <button
               key={server.id}
-              className={`server-icon ${currentServerId === server.id ? 'active' : ''}`}
+              className={`server-icon ${currentServerId === server.id ? 'active' : ''} ${eventMeta ? 'has-events' : ''} ${eventMeta?.hasToday ? 'has-events-today' : ''}`}
               onClick={() => onServerChange(server.id)}
               onContextMenu={(e) => {
                 e.preventDefault()
@@ -129,6 +235,11 @@ const ServerSidebar = ({ servers, currentServerId, onServerChange, onCreateServe
                   {unreadCount > 99 ? '99+' : unreadCount}
                 </div>
               )}
+              {eventMeta && (
+                <div className={`server-event-badge ${eventMeta.hasToday ? 'today' : 'upcoming'}`} title={eventMeta.hasToday ? 'Event today' : 'Upcoming event'}>
+                  <CalendarDaysIcon size={10} />
+                </div>
+              )}
             </button>
           )})}
           
@@ -141,14 +252,14 @@ const ServerSidebar = ({ servers, currentServerId, onServerChange, onCreateServe
                 x: e.clientX,
                 y: e.clientY,
                 items: [
-                  { icon: <Plus size={16} />, label: t('servers.create'), onClick: () => onOpenCreate ? onOpenCreate() : setShowCreateModal(true) },
-                  { icon: <LogIn size={16} />, label: t('servers.join'), onClick: () => onOpenJoin ? onOpenJoin() : setShowJoinModal(true) },
+                  { icon: <PlusIcon size={16} />, label: t('servers.create'), onClick: () => onOpenCreate ? onOpenCreate() : setShowCreateModal(true) },
+                  { icon: <ArrowRightOnRectangleIcon size={16} />, label: t('servers.join'), onClick: () => onOpenJoin ? onOpenJoin() : setShowJoinModal(true) },
                 ]
               })
             }}
             title={t('servers.create')}
           >
-            <Plus size={24} />
+            <PlusIcon size={24} />
           </button>
 
           <button 
@@ -160,14 +271,14 @@ const ServerSidebar = ({ servers, currentServerId, onServerChange, onCreateServe
                 x: e.clientX,
                 y: e.clientY,
                 items: [
-                  { icon: <Plus size={16} />, label: t('servers.create'), onClick: () => onOpenCreate ? onOpenCreate() : setShowCreateModal(true) },
-                  { icon: <LogIn size={16} />, label: t('servers.join'), onClick: () => onOpenJoin ? onOpenJoin() : setShowJoinModal(true) },
+                  { icon: <PlusIcon size={16} />, label: t('servers.create'), onClick: () => onOpenCreate ? onOpenCreate() : setShowCreateModal(true) },
+                  { icon: <ArrowRightOnRectangleIcon size={16} />, label: t('servers.join'), onClick: () => onOpenJoin ? onOpenJoin() : setShowJoinModal(true) },
                 ]
               })
             }}
             title={t('servers.join')}
           >
-            <LogIn size={22} />
+            <ArrowRightOnRectangleIcon size={22} />
           </button>
 
           <div className="server-spacer"></div>
@@ -181,14 +292,14 @@ const ServerSidebar = ({ servers, currentServerId, onServerChange, onCreateServe
                 x: e.clientX,
                 y: e.clientY,
                 items: [
-                  { icon: <Settings size={16} />, label: t('nav.settings'), onClick: onOpenSettings },
-                  { icon: <LogIn size={16} />, label: t('servers.join'), onClick: () => onOpenJoin ? onOpenJoin() : setShowJoinModal(true) },
+                  { icon: <CogIcon size={16} />, label: t('nav.settings'), onClick: onOpenSettings },
+                  { icon: <ArrowRightOnRectangleIcon size={16} />, label: t('servers.join'), onClick: () => onOpenJoin ? onOpenJoin() : setShowJoinModal(true) },
                 ]
               })
             }}
             title={t('nav.settings')}
           >
-            <Settings size={24} />
+            <CogIcon size={24} />
           </button>
         </div>
       </div>
@@ -205,8 +316,13 @@ const ServerSidebar = ({ servers, currentServerId, onServerChange, onCreateServe
               onClick: () => onServerChange(contextMenu.server?.id)
             },
             {
+              label: mutedServers[contextMenu.server?.id] ? 'Unmute Notifications' : 'Mute Notifications',
+              icon: mutedServers[contextMenu.server?.id] ? <BellIcon size={14} /> : <BellSlashIcon size={14} />,
+              onClick: () => handleMuteServer(contextMenu.server, !mutedServers[contextMenu.server?.id])
+            },
+            {
               label: t('servers.serverSettings'),
-              icon: <Shield size={14} />,
+              icon: <ShieldCheckIcon size={14} />,
               onClick: () => {
                 onServerChange(contextMenu.server?.id)
                 onOpenServerSettings?.()
@@ -215,13 +331,18 @@ const ServerSidebar = ({ servers, currentServerId, onServerChange, onCreateServe
             },
             {
               label: t('servers.serverId'),
-              icon: <Copy size={14} />,
+              icon: <ClipboardDocumentIcon size={14} />,
               onClick: () => navigator.clipboard.writeText(contextMenu.server?.id)
+            },
+            {
+              label: 'Report Server',
+              icon: <FlagIcon size={14} />,
+              onClick: () => handleReportServer(contextMenu.server)
             },
             { type: 'separator' },
             {
               label: t('servers.leaveServer'),
-              icon: <LogOut size={14} />,
+              icon: <ArrowRightOnRectangleIcon size={14} />,
               onClick: () => handleLeaveServer(contextMenu.server),
               danger: true,
               disabled: contextMenu.server?.ownerId === user?.id
@@ -229,7 +350,7 @@ const ServerSidebar = ({ servers, currentServerId, onServerChange, onCreateServe
             { type: 'separator' },
             {
               label: t('common.close'),
-              icon: <MoreHorizontal size={14} />,
+              icon: <EllipsisHorizontalIcon size={14} />,
               onClick: () => {}
             }
           ]}

@@ -1,6 +1,6 @@
 .invite-embed {
-  background: var(--volt-bg-tertiary, #1a1f2e);
-  border: 1px solid var(--volt-border, #2a2f3e);
+  background: var(--volt-bg-tertiary);
+  border: 1px solid var(--volt-border);
   border-radius: 8px;
   max-width: 400px;
   margin: 6px 0;
@@ -12,7 +12,7 @@
   align-items: center;
   gap: 8px;
   padding: 14px 16px;
-  color: var(--volt-text-muted, #8a8f9e);
+  color: var(--volt-text-muted);
   font-size: 13px;
 }
 
@@ -38,7 +38,7 @@
   height: 40px;
   border-radius: 12px;
   background: rgba(239, 68, 68, 0.12);
-  color: var(--volt-danger, #ef4444);
+  color: var(--volt-danger);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -48,12 +48,12 @@
 .invite-embed.invalid .invite-embed-label {
   font-size: 13px;
   font-weight: 600;
-  color: var(--volt-danger, #ef4444);
+  color: var(--volt-danger);
 }
 
 .invite-embed.invalid .invite-embed-desc {
   font-size: 12px;
-  color: var(--volt-text-muted, #8a8f9e);
+  color: var(--volt-text-muted);
   margin-top: 2px;
 }
 
@@ -66,7 +66,7 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: var(--volt-text-muted, #8a8f9e);
+  color: var(--volt-text-muted);
 }
 
 .invite-embed-body {
@@ -80,7 +80,7 @@
   width: 48px;
   height: 48px;
   border-radius: 14px;
-  background: var(--volt-primary, #1fb6ff);
+  background: var(--volt-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -105,7 +105,7 @@
 .invite-embed-name {
   font-size: 15px;
   font-weight: 600;
-  color: var(--volt-text-primary, #e0e0e0);
+  color: var(--volt-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -123,7 +123,7 @@
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: var(--volt-text-muted, #8a8f9e);
+  color: var(--volt-text-muted);
 }
 
 .invite-embed-dot {
@@ -134,16 +134,16 @@
 }
 
 .invite-embed-dot.online {
-  background: var(--volt-success, #22c55e);
+  background: var(--volt-success);
 }
 
 .invite-embed-dot.members {
-  background: var(--volt-text-muted, #8a8f9e);
+  background: var(--volt-text-muted);
 }
 
 .invite-embed-join {
   padding: 8px 20px;
-  background: var(--volt-primary, #1fb6ff);
+  background: var(--volt-primary);
   color: white;
   border: none;
   border-radius: 6px;
@@ -163,5 +163,5 @@
 }
 
 .invite-embed-join.joined {
-  background: var(--volt-success, #22c55e);
+  background: var(--volt-success);
 }

@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
-import { Users, Check, X, Loader2, Globe, Link2 } from 'lucide-react'
+import { UsersIcon, CheckIcon, XMarkIcon, ArrowPathIcon, GlobeAltIcon, LinkIcon } from '@heroicons/react/24/outline'
 import { apiService } from '../services/apiService'
-import { getStoredServer } from '../services/serverConfig'
 import { useAuth } from '../contexts/AuthContext'
 import { useAppStore } from '../store/useAppStore'
 import { useTranslation } from '../hooks/useTranslation'
+import Avatar from '../components/Avatar'
 import '../assets/styles/InvitePage.css'
 
 const InvitePage = () => {
@@ -24,10 +24,6 @@ const InvitePage = () => {
   const [externalHost, setExternalHost] = useState(searchParams.get('host') || '')
   const [showHostInput, setShowHostInput] = useState(false)
   
-  const server = getStoredServer()
-  const apiUrl = server?.apiUrl || ''
-  const imageApiUrl = server?.imageApiUrl || apiUrl
-
   useEffect(() => {
     resolveInvite()
   }, [code])
@@ -155,7 +151,7 @@ const InvitePage = () => {
     return (
       <div className="invite-page">
         <div className="invite-card loading">
-          <Loader2 size={48} className="spin" />
+          <ArrowPathIcon size={48} className="spin" />
           <p>{t('invitePage.loadingInvite', 'Loading invite...')}</p>
         </div>
       </div>
@@ -166,8 +162,8 @@ const InvitePage = () => {
     return (
       <div className="invite-page">
         <div className="invite-card">
-          <div className="invite-icon" style={{ background: 'rgba(31,182,255,0.1)', color: 'var(--volt-primary, #1fb6ff)' }}>
-            <Globe size={48} />
+          <div className="invite-icon" style={{ background: 'rgba(31,182,255,0.1)', color: 'var(--volt-primary)' }}>
+            <GlobeAltIcon size={48} />
           </div>
           <h1>{t('invitePage.externalInviteTitle', 'External Invite')}</h1>
           <p style={{ color: 'var(--volt-text-secondary)', marginBottom: 16 }}>
@@ -183,7 +179,7 @@ const InvitePage = () => {
               autoFocus
             />
             <button type="submit" className="btn btn-primary btn-large" style={{ marginTop: 10, width: '100%' }}>
-              <Link2 size={18} /> {t('invitePage.lookUpInvite', 'Look Up Invite')}
+              <LinkIcon size={18} /> {t('invitePage.lookUpInvite', 'Look Up Invite')}
             </button>
           </form>
           {error && <div className="error-message" style={{ marginTop: 12 }}>{error}</div>}
@@ -200,7 +196,7 @@ const InvitePage = () => {
       <div className="invite-page">
         <div className="invite-card error">
           <div className="invite-icon error">
-            <X size={48} />
+            <XMarkIcon size={48} />
           </div>
           <h1>{t('invitePage.invalidInviteTitle', 'Invalid Invite')}</h1>
           <p>{error}</p>
@@ -217,7 +213,7 @@ const InvitePage = () => {
       <div className="invite-page">
         <div className="invite-card success">
           <div className="invite-icon success">
-            <Check size={48} />
+            <CheckIcon size={48} />
           </div>
           <h1>{t('invitePage.joinedTitle', 'Joined!')}</h1>
           <p>{t('invitePage.welcomeToServer', 'Welcome to {server}', { server: getServerName() })}</p>
@@ -251,7 +247,7 @@ const InvitePage = () => {
           
           {isExternal && remoteHost && (
             <div className="invite-federation-badge">
-              <Globe size={14} />
+              <GlobeAltIcon size={14} />
               <span>{remoteHost}</span>
             </div>
           )}
@@ -264,7 +260,7 @@ const InvitePage = () => {
             </div>
           )}
           <div className="stat">
-            <Users size={16} />
+            <UsersIcon size={16} />
               <span>{t('invitePage.memberCount', '{count} Members', { count: memberCount })}</span>
           </div>
           </div>
@@ -276,10 +272,12 @@ const InvitePage = () => {
 
         {invite?.inviter && (
           <div className="inviter-info">
-            <img 
-              src={invite.inviter.avatar || `${imageApiUrl}/api/images/users/${invite.inviter.id}/profile`} 
-              alt={invite.inviter.username}
+            <Avatar
+              src={invite.inviter.avatar}
+              fallback={invite.inviter.username}
               className="inviter-avatar"
+              size={32}
+              userId={invite.inviter.id}
             />
             <span>{t('invitePage.invitedBy', 'Invited by')} <strong>{invite.inviter.username}</strong></span>
           </div>
@@ -287,7 +285,7 @@ const InvitePage = () => {
 
         {isExternal && invite?.newPeer && (
           <div className="federation-notice">
-            <Globe size={14} />
+            <GlobeAltIcon size={14} />
             <span>{t('invitePage.federationNotice', 'A federation link will be established automatically')}</span>
           </div>
         )}
@@ -301,7 +299,7 @@ const InvitePage = () => {
         >
           {joining ? (
             <>
-              <Loader2 size={20} className="spin" />
+              <ArrowPathIcon size={20} className="spin" />
               {t('invitePage.joining', 'Joining...')}
             </>
           ) : isAuthenticated ? (

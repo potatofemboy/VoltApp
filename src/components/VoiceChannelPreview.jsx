@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react'
-import { Volume2, Users, PhoneCall } from 'lucide-react'
+import { SpeakerWaveIcon, UsersIcon, PhoneIcon } from '@heroicons/react/24/outline'
 import { useSocket } from '../contexts/SocketContext'
 import { useTranslation } from '../hooks/useTranslation'
+import { soundService } from '../services/soundService'
 import Avatar from './Avatar'
 import '../assets/styles/VoiceChannelPreview.css'
 
@@ -31,7 +32,7 @@ const VoiceChannelPreview = ({ channel, onJoin, onClose }) => {
   return (
     <div className="voice-channel-preview">
       <div className="preview-header">
-        <Volume2 size={24} />
+        <SpeakerWaveIcon size={24} />
         <div className="preview-info">
           <h3>{channel?.name}</h3>
           <span className="preview-type">{t('chat.voiceChannel', 'Voice Channel')}</span>
@@ -40,7 +41,7 @@ const VoiceChannelPreview = ({ channel, onJoin, onClose }) => {
 
       <div className="preview-participants">
         <div className="participants-header">
-          <Users size={16} />
+          <UsersIcon size={16} />
           <span>{participants.length} {t('chat.connected', 'connected')}</span>
         </div>
 
@@ -48,7 +49,7 @@ const VoiceChannelPreview = ({ channel, onJoin, onClose }) => {
           <div className="participants-list">
             {participants.map(p => (
               <div key={p.id} className="participant-item">
-                <Avatar src={p.avatar} fallback={p.username} size={32} />
+                <Avatar src={p.avatar} fallback={p.username} size={32} userId={p.userId} />
                 <span className="participant-name">{p.username}</span>
                 {p.muted && <span className="participant-status muted">{t('chat.muted', 'Muted')}</span>}
               </div>
@@ -66,8 +67,11 @@ const VoiceChannelPreview = ({ channel, onJoin, onClose }) => {
         <button className="btn btn-secondary" onClick={onClose}>
           {t('common.cancel', 'Cancel')}
         </button>
-        <button className="btn btn-primary" onClick={onJoin}>
-          <PhoneCall size={18} />
+        <button className="btn btn-primary" onClick={() => {
+          soundService.prime()
+          onJoin?.()
+        }}>
+          <PhoneIcon size={18} />
           {t('chat.joinChannel', 'Join Voice')}
         </button>
       </div>

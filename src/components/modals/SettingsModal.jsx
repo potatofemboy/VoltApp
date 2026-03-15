@@ -1,10 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { X, User, Bell, Volume2, Shield, Palette, Info, Mic, Video, Monitor, MicOff, VideoOff, Eye, Edit2, Globe, Server, Settings, Bot, Network, Play, Pause, Languages } from 'lucide-react'
+import { XMarkIcon, UserIcon, BellIcon, ShieldCheckIcon, MicrophoneIcon, VideoCameraIcon, VideoCameraSlashIcon, ComputerDesktopIcon, EyeIcon, PencilIcon, ServerIcon, SparklesIcon, PlayIcon, PauseIcon, SpeakerWaveIcon, Cog6ToothIcon, ArrowDownTrayIcon, ArrowUpTrayIcon, KeyIcon, RocketLaunchIcon } from "@heroicons/react/24/outline";
+import { Camera, ImagePlus, Trash2, X, User, Bell, Volume2, ShieldCheck, Palette, Info, Mic, Video, Monitor, VideoOff, Eye, Pencil, Globe, Server, Settings, Sparkles, Play, Pause, Languages, Download, Upload, Key, Wand2, Type, Sliders } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { useTheme } from '../../contexts/ThemeContext'
 import { useI18n } from '../../contexts/I18nContext'
+import { useE2e } from '../../contexts/E2eContext'
 import { useBanner } from '../../hooks/useAvatar'
+import { useUserPreferences } from '../../hooks/useUserPreferences'
 import { settingsService } from '../../services/settingsService'
+import { createVTPPackage, downloadVTPPackage, importVTPPackage, validateThemePackage, exportCurrentTheme } from '../../utils/themePackage'
 import { soundService } from '../../services/soundService'
 import { pushService } from '../../services/pushService'
 import { apiService } from '../../services/apiService'
@@ -14,9 +18,14 @@ import MarkdownMessage from '../MarkdownMessage'
 import BioEditor from '../BioEditor'
 import AgeVerificationModal from './AgeVerificationModal'
 import AdminConfigModal from './AdminConfigModal'
+import ThemeCustomizer from './ThemeCustomizer'
+import FontSelector from './FontSelector'
+import AnimationSettings from './AnimationSettings'
+import ColorCustomizer from './ColorCustomizer'
 import SelfVoltPanel from '../SelfVoltPanel'
 import FederationPanel from '../FederationPanel'
 import BotPanel from '../BotPanel'
+import ActivityAppsPanel from '../ActivityAppsPanel'
 import './Modal.css'
 import './SettingsModal.css'
 import '../../assets/styles/RichTextEditor.css'
@@ -26,8 +35,9 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
   const [isMobile, setIsMobile] = useState(false)
   const [showSidebar, setShowSidebar] = useState(true)
   const { user, logout, refreshUser } = useAuth()
-  const { theme, setTheme, allThemes, customThemes, addCustomTheme, removeCustomTheme } = useTheme()
+  const { theme, setTheme, allThemes, customThemes, addCustomTheme, removeCustomTheme, saveActiveThemeConfig } = useTheme()
   const { t, language, setLanguage, availableLanguages } = useI18n()
+  const { exportAllKeysForBackup, importAllKeysFromBackup, userKeys } = useE2e()
   const server = getStoredServer()
   const apiUrl = server?.apiUrl || ''
   const imageApiUrl = server?.imageApiUrl || apiUrl
@@ -50,26 +60,132 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
   const [micError, setMicError] = useState(null)
   const [cameraError, setCameraError] = useState(null)
   const [ageInfo, setAgeInfo] = useState(null)
+  const [ageJurisdictions, setAgeJurisdictions] = useState([])
+  const [ageJurisdictionCode, setAgeJurisdictionCode] = useState('GLOBAL')
+  const [ageSavingPolicy, setAgeSavingPolicy] = useState(false)
   const [ageLoading, setAgeLoading] = useState(false)
   const [ageError, setAgeError] = useState('')
   const [showAgeVerify, setShowAgeVerify] = useState(false)
+  const [myReports, setMyReports] = useState([])
+  const [reportsLoading, setReportsLoading] = useState(false)
+  const [reportsError, setReportsError] = useState('')
   const [showAdminConfig, setShowAdminConfig] = useState(false)
   const [bioPreview, setBioPreview] = useState(false)
   const [bioValue, setBioValue] = useState('')
   const [usernameValue, setUsernameValue] = useState('')
   const [displayNameValue, setDisplayNameValue] = useState('')
+  const [accountAvatarPreview, setAccountAvatarPreview] = useState('')
+  const [accountBannerPreview, setAccountBannerPreview] = useState('')
+  const [profileMediaError, setProfileMediaError] = useState('')
+  const [savingAvatar, setSavingAvatar] = useState(false)
+  const [savingBanner, setSavingBanner] = useState(false)
+  const [birthDateValue, setBirthDateValue] = useState('')
+  const [birthDateError, setBirthDateError] = useState('')
   const [usernameError, setUsernameError] = useState('')
   const [displayNameError, setDisplayNameError] = useState('')
   const [pushSupported, setPushSupported] = useState(false)
   const [pushEnabled, setPushEnabled] = useState(false)
   const [previewingSound, setPreviewingSound] = useState(null)
+  const [backupPassword, setBackupPassword] = useState('')
+  const [backupConfirmPassword, setBackupConfirmPassword] = useState('')
+  const [backupError, setBackupError] = useState('')
+  const [backupSuccess, setBackupSuccess] = useState('')
+  const [restorePassword, setRestorePassword] = useState('')
+  const [restoreError, setRestoreError] = useState('')
+  const [restoreSuccess, setRestoreSuccess] = useState('')
+  const [isBackingUp, setIsBackingUp] = useState(false)
+  const [isRestoring, setIsRestoring] = useState(false)
+  const [showThemeCustomizer, setShowThemeCustomizer] = useState(false)
+  const [showFontModal, setShowFontModal] = useState(false)
+  const [showAnimationModal, setShowAnimationModal] = useState(false)
+  const [showProfileCustomModal, setShowProfileCustomModal] = useState(false)
   const micStreamRef = useRef(null)
   const cameraStreamRef = useRef(null)
   const videoPreviewRef = useRef(null)
+  const avatarInputRef = useRef(null)
+  const bannerInputRef = useRef(null)
   const analyserRef = useRef(null)
   const animationRef = useRef(null)
+  const soundPreviewTimeoutRef = useRef(null)
 
   const [isAdminUser, setIsAdminUser] = useState(false)
+  const isDesktopApp = typeof window !== 'undefined' && window.__IS_DESKTOP_APP__ && typeof window.electron?.setDiscordPresence === 'function'
+  const soundpackOptions = [
+    { value: 'default', label: t('notifications.defaultSoundpack', 'Default (Generated)') },
+    { value: 'classic', label: t('notifications.classicSoundpack', 'Enclica Messenger') },
+    { value: 'kenney_interface', label: t('notifications.kenneyInterfaceSoundpack', 'Kenney Interface (CC0)') },
+    { value: 'button_hitech', label: t('notifications.buttonHitechSoundpack', 'Button Hi-Tech (CC0)') },
+    { value: 'owlish', label: t('notifications.owlishSoundpack', 'Owlish Media (CC0)') },
+    { value: 'ui51', label: t('notifications.ui51Soundpack', 'UI SFX Set (CC0)') },
+    { value: 'digital63', label: t('notifications.digital63Soundpack', 'Digital SFX Set (CC0)') },
+    { value: 'retro512', label: t('notifications.retro512Soundpack', 'Retro 512 (CC0)') },
+    { value: 'rpg50', label: t('notifications.rpg50Soundpack', 'RPG 50 (CC0)') },
+    { value: 'kenney_interface_alt1', label: t('notifications.kenneyInterfaceAlt1Soundpack', 'Kenney Interface Alt 1 (CC0)') },
+    { value: 'kenney_interface_alt2', label: t('notifications.kenneyInterfaceAlt2Soundpack', 'Kenney Interface Alt 2 (CC0)') },
+    { value: 'button_hitech_alt', label: t('notifications.buttonHitechAltSoundpack', 'Button Hi-Tech Alt (CC0)') },
+    { value: 'owlish_ui', label: t('notifications.owlishUiSoundpack', 'Owlish UI Alt (CC0)') },
+    { value: 'owlish_scifi', label: t('notifications.owlishScifiSoundpack', 'Owlish Sci-Fi Alt (CC0)') },
+    { value: 'ui51_alt', label: t('notifications.ui51AltSoundpack', 'UI SFX Set Alt (CC0)') },
+    { value: 'digital63_alt', label: t('notifications.digital63AltSoundpack', 'Digital SFX Alt (CC0)') },
+    { value: 'retro512_alt1', label: t('notifications.retro512Alt1Soundpack', 'Retro 512 Alt 1 (CC0)') },
+    { value: 'retro512_alt2', label: t('notifications.retro512Alt2Soundpack', 'Retro 512 Alt 2 (CC0)') },
+    { value: 'rpg50_alt', label: t('notifications.rpg50AltSoundpack', 'RPG 50 Alt (CC0)') }
+  ]
+  const prettifySoundKey = (key) => (
+    key
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/^./, (char) => char.toUpperCase())
+  )
+
+  const previewLabelByKey = {
+    messageReceived: t('notifications.soundMessage', 'Message'),
+    mention: t('notifications.soundMention', 'Mention'),
+    callJoin: t('notifications.soundFriendCall', 'Friend Call'),
+    userJoined: t('notifications.soundVoiceJoin', 'Voice Join'),
+    userLeft: t('notifications.soundVoiceLeave', 'Voice Leave'),
+    ringtone: t('notifications.soundRingtone', 'Ringtone'),
+    welcome: t('notifications.soundWelcome', 'Welcome'),
+    logout: t('common.logout'),
+    dmReceived: t('notifications.soundDmReceived', 'DM Received'),
+    dmMention: t('notifications.soundDmMention', 'DM Mention'),
+    callConnected: t('notifications.soundCallConnected', 'Call Connected'),
+    callLeft: t('notifications.soundCallLeft', 'Call Left'),
+    callEnded: t('notifications.soundCallEnded', 'Call Ended'),
+    callDeclined: t('notifications.soundCallDeclined', 'Call Declined'),
+    mute: t('notifications.soundMute', 'Mute'),
+    unmute: t('notifications.soundUnmute', 'Unmute'),
+    deafen: t('notifications.soundDeafen', 'Deafen'),
+    undeafen: t('notifications.soundUndeafen', 'Undeafen'),
+    screenShareStart: t('notifications.soundScreenShareStart', 'Screen Share Start'),
+    screenShareStop: t('notifications.soundScreenShareStop', 'Screen Share Stop'),
+    cameraOn: t('notifications.soundCameraOn', 'Camera On'),
+    cameraOff: t('notifications.soundCameraOff', 'Camera Off'),
+    voiceKick: t('notifications.soundVoiceKick', 'Voice Kick'),
+    serverJoined: t('notifications.soundServerJoined', 'Server Joined'),
+    roleAdded: t('notifications.soundRoleAdded', 'Role Added'),
+    roleRemoved: t('notifications.soundRoleRemoved', 'Role Removed'),
+    notification: t('notifications.soundNotification', 'Notification'),
+    error: t('notifications.soundError', 'Error'),
+    success: t('notifications.soundSuccess', 'Success'),
+    typing: t('notifications.soundTyping', 'Typing')
+  }
+
+  const selectedPack = settings.soundpack || 'default'
+  const previewSounds = soundService.getPreviewSoundKeys(selectedPack).map((key) => ({
+    key,
+    label: previewLabelByKey[key] || prettifySoundKey(key)
+  }))
+
+  useEffect(() => {
+    return () => {
+      if (soundPreviewTimeoutRef.current) {
+        clearTimeout(soundPreviewTimeoutRef.current)
+      }
+      if (previewingSound) {
+        soundService.stopPreview(previewingSound)
+      }
+    }
+  }, [previewingSound])
 
   useEffect(() => {
     const checkAdmin = async () => {
@@ -99,7 +215,7 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
     mode: 'dark',
     primary: '#12d8ff',
     success: '#3be3b2',
-    warning: '#ffd166',
+    warning: 'var(--volt-warning)',
     danger: '#ff6b81',
     bgPrimary: '#08111e',
     bgSecondary: '#0c1a2c',
@@ -115,6 +231,9 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
     gradientB: '#142b46'
   }))
   const [customThemeError, setCustomThemeError] = useState('')
+  const [importExportLoading, setImportExportLoading] = useState(false)
+  const [importExportMessage, setImportExportMessage] = useState({ type: '', text: '' })
+  const themeImportInputRef = useRef(null)
 
   const getThemePreviewBackground = (t) => {
     const v = t?.vars || {}
@@ -171,14 +290,39 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
 
   const enumerateDevices = async () => {
     try {
+      // Try to get a stream first - needed for output device labels in Chrome
+      let stream = null
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+        stream.getTracks().forEach(t => t.stop())
+      } catch (permErr) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          stream.getTracks().forEach(t => t.stop())
+        } catch (e) {
+          console.log('[Settings] Could not get media permissions for device enumeration')
+        }
+      }
+      
       const deviceList = await navigator.mediaDevices.enumerateDevices()
+      
+      const outputDevices = deviceList.filter(d => d.kind === 'audiooutput')
+      
+      console.log('[Settings] Found output devices:', outputDevices.length)
+      console.log('[Settings] Output device labels:', outputDevices.map(d => d.label))
+      
       setDevices({
         audio: deviceList.filter(d => d.kind === 'audioinput'),
         video: deviceList.filter(d => d.kind === 'videoinput'),
-        output: deviceList.filter(d => d.kind === 'audiooutput')
+        output: outputDevices.length > 0 ? outputDevices : [{ deviceId: 'default', label: 'System Default', kind: 'audiooutput' }]
       })
     } catch (err) {
-      console.error('Failed to enumerate devices:', err)
+      console.error('[Settings] Failed to enumerate devices:', err)
+      setDevices({
+        audio: [],
+        video: [],
+        output: [{ deviceId: 'default', label: 'System Default', kind: 'audiooutput' }]
+      })
     }
   }
 
@@ -205,8 +349,29 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
   }
 
   useEffect(() => {
-    // Initial device enumeration (may not have labels without permissions)
-    enumerateDevices()
+    // Request permissions first to get device labels, then enumerate
+    const initDevices = async () => {
+      try {
+        // Request audio permission first
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+        stream.getTracks().forEach(t => t.stop())
+        setPermissionsGranted(true)
+      } catch (err) {
+        console.log('[Settings] Could not get all permissions:', err.message)
+        try {
+          // Try audio only
+          const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          audioStream.getTracks().forEach(t => t.stop())
+        } catch (e) {
+          console.log('[Settings] Could not get audio permission')
+        }
+      }
+      
+      // Now enumerate devices with permissions granted
+      await enumerateDevices()
+    }
+    
+    initDevices()
     
     // Listen for device changes
     navigator.mediaDevices?.addEventListener('devicechange', enumerateDevices)
@@ -218,12 +383,27 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
     }
   }, [])
 
+  // If a previously saved device disappears, fall back to default to avoid broken audio routing.
+  useEffect(() => {
+    if (!devices.output?.length) return
+    const outputIds = new Set(devices.output.map(d => d.deviceId))
+    if (settings.outputDevice && settings.outputDevice !== 'default' && !outputIds.has(settings.outputDevice)) {
+      handleSelect('outputDevice', 'default')
+    }
+  }, [devices.output, settings.outputDevice])
+
   useEffect(() => {
     if (user) {
       setUsernameValue(user.customUsername || '')
       setDisplayNameValue(user.displayName || '')
+      setBirthDateValue(user.birthDate || '')
+      setAccountAvatarPreview(user.avatar || '')
     }
   }, [user])
+
+  useEffect(() => {
+    setAccountBannerPreview(bannerSrc || '')
+  }, [bannerSrc])
 
   useEffect(() => {
     const initPush = async () => {
@@ -232,7 +412,15 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
       
       if (supported) {
         const subscription = await pushService.getSubscription()
-        setPushEnabled(!!subscription)
+        const hasSubscription = !!subscription
+        setPushEnabled(hasSubscription)
+        if (settings.pushNotifications && !hasSubscription) {
+          setSettings(prev => {
+            const next = { ...prev, pushNotifications: false }
+            settingsService.saveSettings(next)
+            return next
+          })
+        }
       }
     }
     initPush()
@@ -292,7 +480,7 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
     } catch (err) {
       console.error('Failed to start mic test:', err)
       if (err.name === 'NotAllowedError') {
-        setMicError('Microphone access denied. Please allow microphone access in your browser.')
+        setMicError('Mic access denied. Please allow microphone access in your browser.')
       } else if (err.name === 'NotFoundError') {
         setMicError('No microphone found. Please connect a microphone.')
       } else {
@@ -385,14 +573,16 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
     { id: 'account', label: t('settings.account'), icon: User },
     { id: 'notifications', label: t('settings.notifications'), icon: Bell },
     { id: 'language', label: t('settings.language'), icon: Languages },
-    { id: 'voice', label: t('settings.voice'), icon: Volume2 },
-    { id: 'privacy', label: t('settings.privacy'), icon: Shield },
-    { id: 'age', label: t('settings.age'), icon: Shield },
+    { id: 'voice', label: t('settings.voice'), icon: SpeakerWaveIcon },
+    { id: 'privacy', label: t('settings.privacy'), icon: ShieldCheck },
+    { id: 'reports', label: t('settings.reports', 'My Reports'), icon: ShieldCheck },
+    { id: 'age', label: t('settings.age'), icon: ShieldCheck },
     { id: 'selfvolt', label: t('settings.selfvolt'), icon: Globe },
-    { id: 'federation', label: t('settings.federation'), icon: Network, adminOnly: true },
-    { id: 'bots', label: t('settings.bots'), icon: Bot },
+    { id: 'federation', label: t('settings.federation'), icon: Globe, adminOnly: true },
+    { id: 'bots', label: t('settings.bots'), icon: SparklesIcon },
+    { id: 'apps', label: t('settings.apps', 'Apps'), icon: RocketLaunchIcon },
     { id: 'serverconfig', label: t('settings.serverconfig'), icon: Settings, adminOnly: true },
-    { id: 'appearance', label: t('settings.appearance'), icon: Palette },
+    { id: 'customization', label: 'Customization', icon: Wand2 },
     { id: 'about', label: t('settings.about'), icon: Info },
   ]
   const isVoltageServer = server?.name?.toLowerCase() === 'voltage'
@@ -405,15 +595,67 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
     try {
       const res = await apiService.getAgeVerificationStatus()
       setAgeInfo(res.data?.ageVerification || null)
+      setAgeJurisdictions(Array.isArray(res.data?.jurisdictions) ? res.data.jurisdictions : [])
+      setAgeJurisdictionCode(res.data?.jurisdictionCode || res.data?.ageVerification?.jurisdictionCode || 'GLOBAL')
     } catch (err) {
       setAgeError(err?.response?.data?.error || 'Failed to load age verification status')
     }
     setAgeLoading(false)
   }
 
+  const handleAgeJurisdictionChange = async (jurisdictionCode) => {
+    setAgeJurisdictionCode(jurisdictionCode)
+    setAgeSavingPolicy(true)
+    setAgeError('')
+    try {
+      const res = await apiService.setAgeVerificationJurisdiction(jurisdictionCode)
+      setAgeInfo(res.data?.ageVerification || null)
+      setAgeJurisdictions(Array.isArray(res.data?.jurisdictions) ? res.data.jurisdictions : ageJurisdictions)
+      setAgeJurisdictionCode(res.data?.jurisdictionCode || jurisdictionCode)
+      await refreshUser?.()
+    } catch (err) {
+      setAgeError(err?.response?.data?.error || 'Failed to update age verification policy')
+    } finally {
+      setAgeSavingPolicy(false)
+    }
+  }
+
+  const handleAgeSelfAttest = async () => {
+    setAgeSavingPolicy(true)
+    setAgeError('')
+    try {
+      const res = await apiService.selfAttestAgeVerification({ device: 'web' })
+      setAgeInfo(res.data?.ageVerification || null)
+      await refreshUser?.()
+    } catch (err) {
+      setAgeError(err?.response?.data?.error || 'Failed to save self-attestation')
+    } finally {
+      setAgeSavingPolicy(false)
+    }
+  }
+
   useEffect(() => {
     if (activeTab === 'age') {
       loadAgeInfo()
+    }
+  }, [activeTab])
+
+  const loadMyReports = async () => {
+    setReportsLoading(true)
+    setReportsError('')
+    try {
+      const res = await apiService.getMySafetyReports({ limit: 100 })
+      setMyReports(Array.isArray(res.data) ? res.data : [])
+    } catch (err) {
+      setReportsError(err?.response?.data?.error || 'Failed to load your reports')
+    } finally {
+      setReportsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab === 'reports') {
+      loadMyReports()
     }
   }, [activeTab])
 
@@ -437,8 +679,65 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
     setSettings(prev => {
       const newSettings = { ...prev, [key]: value }
       settingsService.saveSettings(newSettings)
+
+      if (['font', 'animationSpeed', 'entranceAnimation', 'exitAnimation', 'smoothTransitions', 'reducedMotion'].includes(key)) {
+        const vars = {
+          '--volt-animation-speed': newSettings.animationSpeed || 'normal',
+          '--volt-entrance-animation': newSettings.entranceAnimation || 'fade',
+          '--volt-exit-animation': newSettings.exitAnimation || 'fade-out',
+          '--volt-smooth-transitions': newSettings.smoothTransitions !== false ? '1' : '0',
+          '--volt-reduced-motion': newSettings.reducedMotion ? '1' : '0',
+        }
+
+        saveActiveThemeConfig({
+          id: theme,
+          font: newSettings.font || 'default',
+          vars,
+        })
+      }
       return newSettings
     })
+  }
+
+  const handleOutputDeviceChange = async (value) => {
+    if (!value || value === 'default') {
+      handleSelect('outputDevice', 'default')
+      return
+    }
+
+    const trySetSink = async (deviceId) => {
+      const probe = document.createElement('audio')
+      if (!probe.setSinkId) return { ok: false, reason: 'unsupported' }
+      try {
+        await probe.setSinkId(deviceId)
+        return { ok: true, deviceId }
+      } catch (err) {
+        return { ok: false, reason: err?.name || 'error', error: err }
+      }
+    }
+
+    let resolvedDeviceId = value
+    let sinkTest = await trySetSink(resolvedDeviceId)
+
+    if (!sinkTest.ok && typeof navigator.mediaDevices?.selectAudioOutput === 'function') {
+      try {
+        const selected = await navigator.mediaDevices.selectAudioOutput({ deviceId: value })
+        if (selected?.deviceId) {
+          resolvedDeviceId = selected.deviceId
+          sinkTest = await trySetSink(resolvedDeviceId)
+        }
+      } catch (err) {
+        console.warn('[Settings] selectAudioOutput failed:', err?.name || err)
+      }
+    }
+
+    if (!sinkTest.ok) {
+      console.warn('[Settings] Output device selection failed, falling back to default:', value, sinkTest.reason)
+      handleSelect('outputDevice', 'default')
+      return
+    }
+
+    handleSelect('outputDevice', resolvedDeviceId)
   }
 
   const handleTabClick = (tabId) => {
@@ -452,6 +751,180 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
     setShowSidebar(true)
   }
 
+  const readImageFile = (file, maxBytes, onLoad) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      setProfileMediaError('Please select an image file.')
+      return
+    }
+    if (file.size > maxBytes) {
+      setProfileMediaError(maxBytes > 2 * 1024 * 1024 ? 'Avatar images must be less than 2MB.' : 'Banner images must be less than 10MB.')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      setProfileMediaError('')
+      onLoad(String(event.target?.result || ''))
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleSettingsAvatarUpload = async (event) => {
+    const file = event.target.files?.[0]
+    readImageFile(file, 2 * 1024 * 1024, async (dataUrl) => {
+      setSavingAvatar(true)
+      try {
+        const response = await apiService.uploadAvatar(dataUrl)
+        const avatar = response.data?.avatar || dataUrl
+        setAccountAvatarPreview(avatar)
+      } catch (err) {
+        console.error('Failed to upload avatar:', err)
+        try {
+          await apiService.updateProfile({ avatar: dataUrl })
+          setAccountAvatarPreview(dataUrl)
+        } catch (fallbackErr) {
+          console.error('Failed to save avatar fallback:', fallbackErr)
+          setProfileMediaError(fallbackErr?.response?.data?.error || 'Failed to update avatar.')
+        }
+      } finally {
+        await refreshUser?.()
+        setSavingAvatar(false)
+        event.target.value = ''
+      }
+    })
+  }
+
+  const handleSettingsBannerUpload = async (event) => {
+    const file = event.target.files?.[0]
+    readImageFile(file, 10 * 1024 * 1024, async (dataUrl) => {
+      setSavingBanner(true)
+      try {
+        await apiService.updateProfile({ banner: dataUrl })
+        setAccountBannerPreview(dataUrl)
+        await refreshUser?.()
+      } catch (err) {
+        console.error('Failed to update banner:', err)
+        setProfileMediaError(err?.response?.data?.error || 'Failed to update banner.')
+      } finally {
+        setSavingBanner(false)
+        event.target.value = ''
+      }
+    })
+  }
+
+  const handleSettingsAvatarRemove = async () => {
+    setSavingAvatar(true)
+    try {
+      await apiService.deleteAvatar()
+      setAccountAvatarPreview('')
+    } catch (err) {
+      console.error('Failed to remove avatar:', err)
+      try {
+        await apiService.updateProfile({ avatar: null })
+        setAccountAvatarPreview('')
+      } catch (fallbackErr) {
+        console.error('Failed to remove avatar fallback:', fallbackErr)
+        setProfileMediaError(fallbackErr?.response?.data?.error || 'Failed to remove avatar.')
+      }
+    } finally {
+      await refreshUser?.()
+      setSavingAvatar(false)
+    }
+  }
+
+  const handleSettingsBannerRemove = async () => {
+    setSavingBanner(true)
+    try {
+      await apiService.updateProfile({ banner: null })
+      setAccountBannerPreview('')
+      await refreshUser?.()
+    } catch (err) {
+      console.error('Failed to remove banner:', err)
+      setProfileMediaError(err?.response?.data?.error || 'Failed to remove banner.')
+    } finally {
+      setSavingBanner(false)
+    }
+  }
+
+  const handleExportKeys = async () => {
+    setBackupError('')
+    setBackupSuccess('')
+    
+    if (!backupPassword) {
+      setBackupError(t('settings.backup.passwordRequired') || 'Password is required')
+      return
+    }
+    
+    if (backupPassword.length < 8) {
+      setBackupError(t('settings.backup.passwordMinLength') || 'Password must be at least 8 characters')
+      return
+    }
+    
+    if (backupPassword !== backupConfirmPassword) {
+      setBackupError(t('settings.backup.passwordMismatch') || 'Passwords do not match')
+      return
+    }
+    
+    setIsBackingUp(true)
+    
+    try {
+      const backupData = await exportAllKeysForBackup(backupPassword)
+      
+      const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `voltchat-keys-backup-${new Date().toISOString().split('T')[0]}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      
+      setBackupSuccess(t('settings.backup.exportSuccess') || 'Keys exported successfully!')
+      setBackupPassword('')
+      setBackupConfirmPassword('')
+    } catch (err) {
+      setBackupError(err.message || 'Failed to export keys')
+    } finally {
+      setIsBackingUp(false)
+    }
+  }
+
+  const handleImportKeys = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    
+    setRestoreError('')
+    setRestoreSuccess('')
+    
+    if (!restorePassword) {
+      setRestoreError(t('settings.backup.passwordRequired') || 'Password is required')
+      event.target.value = ''
+      return
+    }
+    
+    setIsRestoring(true)
+    
+    try {
+      const text = await file.text()
+      const backupData = JSON.parse(text)
+      
+      const result = await importAllKeysFromBackup(backupData, restorePassword)
+      
+      if (result.success) {
+        setRestoreSuccess(t('settings.backup.importSuccess') || 'Keys imported successfully! Please restart the app.')
+        setRestorePassword('')
+      } else {
+        setRestoreError(result.error || 'Failed to import keys')
+      }
+    } catch (err) {
+      setRestoreError(err.message || 'Invalid backup file')
+    } finally {
+      setIsRestoring(false)
+      event.target.value = ''
+    }
+  }
+
   return (
     <>
     <div className="modal-overlay settings-overlay" onClick={onClose} style={showAdminConfig ? { display: 'none' } : undefined}>
@@ -463,7 +936,7 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                 <div className="settings-mobile-header">
                   <h3>{t('settings.title')}</h3>
                   <button className="settings-mobile-close" onClick={onClose} aria-label={t('common.close', 'Close')}>
-                    <X size={18} />
+                    <XMarkIcon size={18} />
                   </button>
                 </div>
               )}
@@ -499,7 +972,7 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                 {tabs.find(t => t.id === activeTab)?.label}
               </span>
               <button className="settings-mobile-close" onClick={onClose} aria-label={t('common.close', 'Close')}>
-                <X size={18} />
+                <XMarkIcon size={18} />
               </button>
             </div>
           )}
@@ -507,7 +980,7 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
           <div className={`settings-content ${isMobile && !showSidebar ? 'mobile-full' : ''} ${isMobile && showSidebar ? 'mobile-hidden' : ''}`}>
             {!isMobile && (
               <button className="settings-close" onClick={onClose}>
-                <X size={24} />
+                <XMarkIcon size={24} />
               </button>
             )}
 
@@ -517,25 +990,66 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                 <div className="user-profile-card">
                   <div 
                     className="user-banner"
-                    style={bannerSrc ? { 
-                      backgroundImage: `url(${bannerSrc})`,
+                    style={accountBannerPreview ? {
+                      backgroundImage: `url(${accountBannerPreview})`,
                       backgroundSize: 'cover',
                       backgroundPosition: 'center'
                     } : {}}
-                  ></div>
+                  >
+                    <div className="account-media-actions banner">
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => bannerInputRef.current?.click()} disabled={savingBanner}>
+                        <ImagePlus size={14} /> {savingBanner ? 'Saving...' : 'Change Banner'}
+                      </button>
+                      {accountBannerPreview ? (
+                        <button type="button" className="btn btn-danger btn-sm" onClick={handleSettingsBannerRemove} disabled={savingBanner}>
+                          <Trash2 size={14} /> Remove
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
                   <Avatar 
-                    src={user?.avatar} 
+                    src={accountAvatarPreview || user?.avatar}
                     alt={user?.username}
                     fallback={user?.username || user?.email}
                     size={80}
                     className="user-avatar-large"
+                    userId={user?.id}
                   />
+                  <div className="account-avatar-actions">
+                    <button type="button" className="btn btn-primary btn-sm" onClick={() => avatarInputRef.current?.click()} disabled={savingAvatar}>
+                      <Camera size={14} /> {savingAvatar ? 'Saving...' : 'Change Avatar'}
+                    </button>
+                    {(accountAvatarPreview || user?.avatar) ? (
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={handleSettingsAvatarRemove} disabled={savingAvatar}>
+                        <Trash2 size={14} /> Remove
+                      </button>
+                    ) : null}
+                  </div>
                   <div className="user-info-large">
                     <h3>{user?.displayName || user?.customUsername || user?.username || 'User'}</h3>
                     <p className="user-username">@{user?.customUsername || user?.username}</p>
                     <p className="user-email">{user?.email}</p>
                   </div>
                 </div>
+
+                <input
+                  ref={avatarInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  style={{ display: 'none' }}
+                  onChange={handleSettingsAvatarUpload}
+                />
+                <input
+                  ref={bannerInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  style={{ display: 'none' }}
+                  onChange={handleSettingsBannerUpload}
+                />
+
+                {profileMediaError ? (
+                  <div className="settings-inline-error">{profileMediaError}</div>
+                ) : null}
 
                 <div className="form-group">
                   <label>{t('account.userId')}</label>
@@ -621,6 +1135,32 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                 </div>
 
                 <div className="form-group">
+                  <label>Birthday</label>
+                  <input
+                    type="date"
+                    className={`input ${birthDateError ? 'input-error' : ''}`}
+                    value={birthDateValue}
+                    max={new Date().toISOString().slice(0, 10)}
+                    onChange={(e) => {
+                      setBirthDateValue(e.target.value)
+                      setBirthDateError('')
+                    }}
+                    onBlur={() => {
+                      if (birthDateValue !== (user?.birthDate || '')) {
+                        apiService.updateProfile({ birthDate: birthDateValue || null })
+                          .then(() => refreshUser?.())
+                          .catch(err => {
+                            console.error('Failed to update birth date:', err)
+                            setBirthDateError(err.response?.data?.error || t('errors.generic'))
+                          })
+                      }
+                    }}
+                  />
+                  {birthDateError && <span className="error-text">{birthDateError}</span>}
+                  <small className="form-hint">Used for age checks and local policy compliance. It does not replace full age verification.</small>
+                </div>
+
+                <div className="form-group">
                   <label>{t('account.bio')}</label>
                   <div className="bio-editor">
                     <div className="bio-editor-tabs">
@@ -629,14 +1169,14 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                         className={`bio-tab ${!bioPreview ? 'active' : ''}`}
                         onClick={() => setBioPreview(false)}
                       >
-                        <Edit2 size={14} /> {t('account.write')}
+                        <PencilIcon size={14} /> {t('account.write')}
                       </button>
                       <button 
                         type="button"
                         className={`bio-tab ${bioPreview ? 'active' : ''}`}
                         onClick={() => setBioPreview(true)}
                       >
-                        <Eye size={14} /> {t('account.preview')}
+                        <EyeIcon size={14} /> {t('account.preview')}
                       </button>
                     </div>
                     {bioPreview ? (
@@ -708,26 +1248,66 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                     <label className="toggle">
                       <input 
                         type="checkbox" 
-                        checked={settings.pushNotifications || pushEnabled}
-                        onChange={async () => {
-                          if (!pushEnabled) {
+                        checked={settings.pushNotifications}
+                        onChange={async (e) => {
+                          const enable = e.target.checked
+                          if (enable) {
+                            const permissionGranted = await pushService.ensurePermission()
+                            if (!permissionGranted) {
+                              console.warn('[Push] Notification permission denied')
+                              setSettings(prev => {
+                                const next = { ...prev, pushNotifications: false }
+                                settingsService.saveSettings(next)
+                                return next
+                              })
+                              return
+                            }
                             const registration = await pushService.register()
                             if (registration) {
-                              const configRes = await apiService.getPushConfig().catch(() => ({ data: { vapidPublicKey: '' } }))
-                              if (configRes.data?.vapidPublicKey) {
-                                const subscription = await pushService.subscribe(registration, configRes.data.vapidPublicKey)
-                                if (subscription) {
-                                  await apiService.subscribePush(subscription)
-                                  setPushEnabled(true)
-                                  handleToggle('pushNotifications')
+                              let subscription = await pushService.getSubscription()
+
+                              if (!subscription) {
+                                if (registration.isDesktop || window.__IS_DESKTOP_APP__) {
+                                  subscription = await pushService.subscribe(registration, '')
+                                } else {
+                                  const configRes = await apiService.getPushConfig().catch(() => ({ data: { vapidPublicKey: '' } }))
+                                  if (configRes.data?.vapidPublicKey) {
+                                    subscription = await pushService.subscribe(registration, configRes.data.vapidPublicKey)
+                                  }
                                 }
                               }
+
+                              if (subscription) {
+                                await apiService.subscribePush(subscription).catch(err => console.error('[Push] Subscribe failed:', err))
+                                setPushEnabled(true)
+                                setSettings(prev => {
+                                  const next = { ...prev, pushNotifications: true }
+                                  settingsService.saveSettings(next)
+                                  return next
+                                })
+                              } else {
+                                setSettings(prev => {
+                                  const next = { ...prev, pushNotifications: false }
+                                  settingsService.saveSettings(next)
+                                  return next
+                                })
+                              }
+                            } else {
+                              setSettings(prev => {
+                                const next = { ...prev, pushNotifications: false }
+                                settingsService.saveSettings(next)
+                                return next
+                              })
                             }
                           } else {
                             await pushService.unsubscribe()
-                            await apiService.unsubscribePush()
+                            await apiService.unsubscribePush().catch(err => console.error('[Push] Unsubscribe failed:', err))
                             setPushEnabled(false)
-                            handleToggle('pushNotifications')
+                            setSettings(prev => {
+                              const next = { ...prev, pushNotifications: false }
+                              settingsService.saveSettings(next)
+                              return next
+                            })
                           }
                         }}
                       />
@@ -742,14 +1322,37 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                     <p>{t('notifications.desktopNotificationsDesc')}</p>
                   </div>
                   <label className="toggle">
-                    <input 
-                      type="checkbox" 
-                      checked={settings.notifications}
-                      onChange={() => handleToggle('notifications')}
-                    />
+                      <input 
+                        type="checkbox" 
+                        checked={settings.notifications}
+                        onChange={async () => {
+                          const nextEnabled = !settings.notifications
+                          if (nextEnabled) {
+                            await pushService.ensurePermission()
+                          }
+                          handleToggle('notifications')
+                        }}
+                      />
                     <span className="toggle-slider"></span>
                   </label>
                 </div>
+
+                {isDesktopApp && (
+                  <div className="setting-item">
+                    <div>
+                      <h4>{t('notifications.discordRichPresence', 'Discord Rich Presence')}</h4>
+                      <p>{t('notifications.discordRichPresenceDesc', 'Show your Volt username and status on Discord while the desktop app is open.')}</p>
+                    </div>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.discordRichPresence}
+                        onChange={() => handleToggle('discordRichPresence')}
+                      />
+                      <span className="toggle-slider"></span>
+                    </label>
+                  </div>
+                )}
 
                 <div className="setting-item">
                   <div>
@@ -814,8 +1417,9 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                       }
                     }}
                     >
-                      <option value="default">{t('notifications.defaultSoundpack', 'Default (Generated)')}</option>
-                      <option value="classic">{t('notifications.classicSoundpack', 'Enclica Messenger')}</option>
+                      {soundpackOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
                     </select>
                   </div>
 
@@ -842,43 +1446,46 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                           <span className="volume-value">{settings.soundpackVolume || 100}%</span>
                         </div>
                       </div>
+                    </>
+                  )}
 
-                      <div className="soundpack-previews">
-                        <h4>{t('notifications.soundPreviews')}</h4>
-                        <div className="sound-preview-grid">
-                          {[
-                            { key: 'messageReceived', label: t('notifications.soundMessage', 'Message') },
-                            { key: 'mention', label: t('notifications.soundMention', 'Mention') },
-                            { key: 'callJoin', label: t('notifications.soundFriendCall', 'Friend Call') },
-                            { key: 'userJoined', label: t('notifications.soundVoiceJoin', 'Voice Join') },
-                            { key: 'userLeft', label: t('notifications.soundVoiceLeave', 'Voice Leave') },
-                            { key: 'ringtone', label: t('notifications.soundRingtone', 'Ringtone') },
-                            { key: 'welcome', label: t('notifications.soundWelcome', 'Welcome') },
-                            { key: 'logout', label: t('common.logout') }
-                          ].map(sound => (
-                          <div key={sound.key} className="sound-preview-item">
-                            <span className="sound-preview-label">{sound.label}</span>
-                            <button 
-                              className={`btn btn-icon ${previewingSound === sound.key ? 'btn-primary' : 'btn-secondary'}`}
-                              onClick={() => {
-                                if (previewingSound === sound.key) {
-                                  setPreviewingSound(null)
-                                } else {
-                                  setPreviewingSound(sound.key)
-                                  soundService.previewSound(sound.key)
-                                  setTimeout(() => setPreviewingSound(null), 2000)
+                  <div className="soundpack-previews">
+                    <h4>{t('notifications.soundPreviews')}</h4>
+                    <div className="sound-preview-grid">
+                      {previewSounds.map(sound => (
+                        <div key={sound.key} className="sound-preview-item">
+                          <span className="sound-preview-label">{sound.label}</span>
+                          <button 
+                            className={`btn btn-icon ${previewingSound === sound.key ? 'btn-primary' : 'btn-secondary'}`}
+                            onClick={() => {
+                              if (soundPreviewTimeoutRef.current) {
+                                clearTimeout(soundPreviewTimeoutRef.current)
+                                soundPreviewTimeoutRef.current = null
+                              }
+                              if (previewingSound === sound.key) {
+                                soundService.stopPreview(sound.key)
+                                setPreviewingSound(null)
+                              } else {
+                                if (previewingSound) {
+                                  soundService.stopPreview(previewingSound)
                                 }
-                              }}
-                              disabled={previewingSound && previewingSound !== sound.key}
-                            >
-                              {previewingSound === sound.key ? <Pause size={14} /> : <Play size={14} />}
-                            </button>
-                          </div>
-                        ))}
-                      </div>
+                                setPreviewingSound(sound.key)
+                                soundService.previewSound(sound.key)
+                                soundPreviewTimeoutRef.current = setTimeout(() => {
+                                  soundService.stopPreview(sound.key)
+                                  setPreviewingSound(null)
+                                  soundPreviewTimeoutRef.current = null
+                                }, 2000)
+                              }
+                            }}
+                            disabled={previewingSound && previewingSound !== sound.key}
+                          >
+                            {previewingSound === sound.key ? <PauseIcon size={14} /> : <PlayIcon size={14} />}
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                  </>
-                )}
+                  </div>
               </div>
             )}
 
@@ -887,13 +1494,13 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                 <h2>{t('settings.voice')}</h2>
                 
                 <div className="voice-settings-group">
-                  <h3><Mic size={18} /> {t('voice.voiceSettings')}</h3>
+                  <h3><MicrophoneIcon size={18} /> {t('voice.voiceSettings')}</h3>
                   
                   {!permissionsGranted && devices.audio.length === 0 && (
                     <div className="permission-notice">
                       <p>{t('voice.grantMicAccess')}</p>
                       <button className="btn btn-secondary btn-sm" onClick={requestPermissions}>
-                        <Mic size={14} /> {t('voice.allowAccess')}
+                        <MicrophoneIcon size={14} /> {t('voice.allowAccess')}
                       </button>
                     </div>
                   )}
@@ -905,10 +1512,10 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                       value={settings.inputDevice}
                       onChange={(e) => handleSelect('inputDevice', e.target.value)}
                     >
-                      <option value="default">{t('voice.defaultMicrophone')}</option>
+                      <option value="default">{t('voice.defaultMic')}</option>
                       {devices.audio.map(d => (
                         <option key={d.deviceId} value={d.deviceId}>
-                          {d.label || `Microphone (${d.deviceId.slice(0, 8)}...)`}
+                          {d.label || `Mic (${d.deviceId.slice(0, 8)}...)`}
                         </option>
                       ))}
                     </select>
@@ -940,7 +1547,8 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                     <select 
                       className="input"
                       value={settings.outputDevice}
-                      onChange={(e) => handleSelect('outputDevice', e.target.value)}
+                      onChange={(e) => handleOutputDeviceChange(e.target.value)}
+                      onFocus={() => enumerateDevices()}
                     >
                       <option value="default">{t('voice.defaultSpeaker')}</option>
                       {devices.output.map(d => (
@@ -996,7 +1604,7 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                         className={`btn ${testingMic ? 'btn-danger' : 'btn-primary'}`}
                         onClick={testingMic ? stopMicTest : startMicTest}
                       >
-                        {testingMic ? <><MicOff size={16} /> {t('voice.stopTest')}</> : <><Mic size={16} /> {t('voice.testMicrophone')}</>}
+                        {testingMic ? <><MicrophoneIcon size={16} /> {t('voice.stopTest')}</> : <><MicrophoneIcon size={16} /> {t('voice.testMic')}</>}
                       </button>
                     </div>
                     {testingMic && (
@@ -1015,7 +1623,7 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                 </div>
 
                 <div className="voice-settings-group">
-                  <h3><Video size={18} /> {t('voice.videoSettings')}</h3>
+                  <h3><VideoCameraIcon size={18} /> {t('voice.videoSettings')}</h3>
                   
                   <div className="form-group">
                     <label>{t('voice.camera')}</label>
@@ -1056,7 +1664,7 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                         />
                       ) : (
                         <div className="camera-preview-placeholder">
-                          <VideoOff size={48} />
+                          <VideoCameraSlashIcon size={48} />
                           <span>{t('voice.cameraPreviewOff')}</span>
                           <span className="preview-hint">{t('voice.clickToStart')}</span>
                         </div>
@@ -1066,13 +1674,13 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                       className={`btn ${testingCamera ? 'btn-danger' : 'btn-primary'}`}
                       onClick={testingCamera ? stopCameraTest : startCameraTest}
                     >
-                      {testingCamera ? <><VideoOff size={16} /> {t('voice.stopPreview')}</> : <><Video size={16} /> {t('voice.startCameraPreview')}</>}
+                      {testingCamera ? <><VideoCameraSlashIcon size={16} /> {t('voice.stopPreview')}</> : <><VideoCameraIcon size={16} /> {t('voice.startCameraPreview')}</>}
                     </button>
                   </div>
                 </div>
 
                 <div className="voice-settings-group">
-                  <h3><Monitor size={18} /> {t('voice.advanced')}</h3>
+                  <h3><ComputerDesktopIcon size={18} /> {t('voice.advanced')}</h3>
 
                   <div className="setting-item">
                     <div>
@@ -1142,6 +1750,121 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                     <option value="nobody">{t('privacy.nobody')}</option>
                   </select>
                 </div>
+
+                <div className="setting-item" style={{ marginTop: '16px' }}>
+                  <div>
+                    <h4>NSFW image filter</h4>
+                    <p>Blur/block NSFW-flagged images locally on this device.</p>
+                  </div>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={!!settings.nsfwImageFilter}
+                      onChange={() => handleToggle('nsfwImageFilter')}
+                    />
+                    <span className="toggle-slider"></span>
+                  </label>
+                </div>
+
+                {userKeys && (
+                  <div className="privacy-note" style={{ marginTop: '24px', borderTop: '1px solid var(--volt-border)', paddingTop: '20px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                      <Key size={20} />
+                      <h4>{t('settings.backup.title') || 'Encryption Key Backup'}</h4>
+                    </div>
+                    <p style={{ marginBottom: '16px', color: 'var(--volt-text-secondary)', fontSize: '14px' }}>
+                      {t('settings.backup.description') || 'Export your encryption keys to a secure backup file. You will need your password to restore them.'}
+                    </p>
+
+                    <div style={{ marginBottom: '16px' }}>
+                      <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+                        {t('settings.backup.password') || 'Backup Password'}
+                      </label>
+                      <input
+                        type="password"
+                        className="input"
+                        placeholder={t('settings.backup.passwordPlaceholder') || 'Enter a strong password'}
+                        value={backupPassword}
+                        onChange={(e) => setBackupPassword(e.target.value)}
+                        style={{ width: '100%' }}
+                      />
+                    </div>
+
+                    <div style={{ marginBottom: '16px' }}>
+                      <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+                        {t('settings.backup.confirmPassword') || 'Confirm Password'}
+                      </label>
+                      <input
+                        type="password"
+                        className="input"
+                        placeholder={t('settings.backup.confirmPasswordPlaceholder') || 'Confirm your password'}
+                        value={backupConfirmPassword}
+                        onChange={(e) => setBackupConfirmPassword(e.target.value)}
+                        style={{ width: '100%' }}
+                      />
+                    </div>
+
+                    {backupError && (
+                      <div className="test-error" style={{ marginBottom: '12px' }}>{backupError}</div>
+                    )}
+                    {backupSuccess && (
+                      <div style={{ marginBottom: '12px', color: 'var(--volt-success)', fontSize: '13px' }}>{backupSuccess}</div>
+                    )}
+
+                    <button
+                      className="btn btn-primary"
+                      onClick={handleExportKeys}
+                      disabled={isBackingUp}
+                      style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                    >
+                      <Download size={16} />
+                      {isBackingUp ? (t('settings.backup.exporting') || 'Exporting...') : (t('settings.backup.export') || 'Export Keys')}
+                    </button>
+                  </div>
+                )}
+
+                <div className="privacy-note" style={{ marginTop: '24px', borderTop: '1px solid var(--volt-border)', paddingTop: '20px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                    <Upload size={20} />
+                    <h4>{t('settings.backup.importTitle') || 'Restore Keys from Backup'}</h4>
+                  </div>
+                  <p style={{ marginBottom: '16px', color: 'var(--volt-text-secondary)', fontSize: '14px' }}>
+                    {t('settings.backup.importDescription') || 'Restore your encryption keys from a backup file.'}
+                  </p>
+
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+                      {t('settings.backup.backupFile') || 'Backup File'}
+                    </label>
+                    <input
+                      type="file"
+                      accept=".json"
+                      onChange={handleImportKeys}
+                      style={{ width: '100%', padding: '8px', background: 'var(--volt-bg-secondary)', border: '1px solid var(--volt-border)', borderRadius: '4px' }}
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', fontWeight: '500' }}>
+                      {t('settings.backup.restorePassword') || 'Backup Password'}
+                    </label>
+                    <input
+                      type="password"
+                      className="input"
+                      placeholder={t('settings.backup.restorePasswordPlaceholder') || 'Enter the password used when creating the backup'}
+                      value={restorePassword}
+                      onChange={(e) => setRestorePassword(e.target.value)}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+
+                  {restoreError && (
+                    <div className="test-error" style={{ marginBottom: '12px' }}>{restoreError}</div>
+                  )}
+                  {restoreSuccess && (
+                    <div style={{ marginBottom: '12px', color: 'var(--volt-success)', fontSize: '13px' }}>{restoreSuccess}</div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -1155,22 +1878,62 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                 {ageLoading ? (
                   <div className="privacy-note">{t('age.loading')}</div>
                 ) : (
-                  <div className="privacy-note">
+                  <div className="privacy-note age-settings-card">
                     <h4>{t('age.status')}</h4>
-                    <p>{ageInfo?.verified ? t('age.verified') : t('age.notVerified')}</p>
+
+                    <div className="age-policy-grid">
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label>Location policy</label>
+                        <select
+                          className="input"
+                          value={ageJurisdictionCode}
+                          onChange={(e) => handleAgeJurisdictionChange(e.target.value)}
+                          disabled={ageSavingPolicy}
+                        >
+                          {(ageJurisdictions.length > 0 ? ageJurisdictions : [{ code: 'GLOBAL', label: 'Other / Not Listed' }]).map((item) => (
+                            <option key={item.code} value={item.code}>{item.label}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className={`age-policy-summary ${ageInfo?.requiresProofVerification ? 'required' : 'optional'}`}>
+                        <strong>{ageInfo?.jurisdictionName || 'Other / Not Listed'}</strong>
+                        <span>{ageInfo?.policySummary || 'Choose the age-verification policy that applies to your account.'}</span>
+                        <span>
+                          Policy: {ageInfo?.policyStatus || 'none'} | Minimum age signal: {ageInfo?.minimumAge || 18}+
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="age-badge-row">
+                      <span className={`status-badge ${ageInfo?.adultAccess ? 'online' : ageInfo?.verified && ageInfo?.category === 'child' ? 'offline' : 'idle'}`}>
+                        {ageInfo?.adultAccess ? '18+ access granted' : ageInfo?.verified && ageInfo?.category === 'child' ? 'Minor profile' : t('age.notVerified')}
+                      </span>
+                      <span className={`status-badge ${ageInfo?.riskLevel === 'self_attested_adult' ? 'idle' : ageInfo?.riskLevel === 'none' ? 'online' : 'offline'}`}>
+                        {ageInfo?.riskLevel === 'self_attested_adult' ? 'Risky to others' : ageInfo?.riskLevel === 'none' ? 'Trusted verification' : 'Needs verification'}
+                      </span>
+                    </div>
+
                     {ageInfo && (
                       <div className="age-meta">
                         <div><strong>{t('age.category')}:</strong> {ageInfo.category || t('age.unknown')}</div>
-                        <div><strong>{t('age.method')}:</strong> {ageInfo.method || t('age.unknown')}</div>
+                        <div><strong>{t('age.method')}:</strong> {ageInfo.method || (ageInfo.selfDeclaredAdult ? 'self_attestation' : t('age.unknown'))}</div>
                         <div><strong>{t('age.verifiedAt')}:</strong> {ageInfo.verifiedAt ? new Date(ageInfo.verifiedAt).toLocaleString() : '—'}</div>
+                        <div><strong>Self-attested at:</strong> {ageInfo.selfAttestedAt ? new Date(ageInfo.selfAttestedAt).toLocaleString() : '—'}</div>
                         <div><strong>{t('age.expiresAt')}:</strong> {ageInfo.expiresAt ? new Date(ageInfo.expiresAt).toLocaleString() : '—'}</div>
                         <div><strong>{t('age.estimatedAge')}:</strong> {ageInfo.estimatedAge ?? '—'}</div>
                       </div>
                     )}
+
                     {ageError && <div className="test-error" style={{ marginTop: 8 }}>{ageError}</div>}
-                    <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                    <div className="age-actions-row" style={{ marginTop: 12 }}>
+                      {!ageInfo?.requiresProofVerification && (
+                        <button className="btn btn-secondary" onClick={handleAgeSelfAttest} disabled={ageSavingPolicy}>
+                          I'm Over 18
+                        </button>
+                      )}
                       <button className="btn btn-primary" onClick={() => { setShowAgeVerify(true); setAgeError('') }}>
-                        {t('age.rerunVerification')}
+                        {ageInfo?.verified ? t('age.rerunVerification') : 'Run full verification'}
                       </button>
                       <button className="btn btn-secondary" onClick={loadAgeInfo}>
                         {t('age.refresh')}
@@ -1181,255 +1944,67 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
               </div>
             )}
 
-            {activeTab === 'appearance' && (
+            {activeTab === 'reports' && (
               <div className="settings-section">
-                <h2>{t('appearance.title')}</h2>
-                <p className="theme-description">{t('appearance.description')}</p>
-                <div className="theme-grid">
-                  {allThemes.map(themeOption => (
-                    <button
-                      key={themeOption.id}
-                      className={`theme-card ${theme === themeOption.id ? 'active' : ''}`}
-                      onClick={() => setTheme(themeOption.id)}
-                      aria-label={t('appearance.applyTheme', 'Apply {{name}} theme', { name: themeOption.name })}
-                    >
-                      <div className="theme-card-preview" style={{ background: getThemePreviewBackground(themeOption) }}>
-                        <div className="theme-card-sidebar"></div>
-                        <div className="theme-card-content">
-                          <div className="theme-card-header"></div>
-                          <div className="theme-card-lines">
-                            <span></span>
-                            <span></span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="theme-card-meta">
-                        <div className="theme-name">{themeOption.name}</div>
-                        <div className="theme-mode">
-                          {themeOption.isCustom
-                            ? t('appearance.custom', 'Custom')
-                            : themeOption.mode === 'auto'
-                              ? t('appearance.system', 'System')
-                              : themeOption.mode === 'dark'
-                                ? t('appearance.dark', 'Dark')
-                                : t('appearance.light', 'Light')}
-                        </div>
-                      </div>
-                      {themeOption.isCustom && (
-                        <span
-                          className="theme-remove"
-                          role="button"
-                          tabIndex={0}
-                          aria-label={t('appearance.removeTheme', 'Remove {{name}} theme', { name: themeOption.name })}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            removeCustomTheme(themeOption.id)
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault()
-                              e.stopPropagation()
-                              removeCustomTheme(themeOption.id)
-                            }
-                          }}
-                        >
-                          {t('appearance.remove', 'Remove')}
-                        </span>
-                      )}
-                    </button>
-                  ))}
+                <h2>{t('settings.reports', 'My Reports')}</h2>
+                <p style={{ marginBottom: '16px', color: 'var(--volt-text-secondary)' }}>
+                  Review reports you submitted and see their moderation status.
+                </p>
+
+                <div className="setting-item">
+                  <div>
+                    <h4>Report History</h4>
+                    <p>Your reports are metadata-only and do not expose private message plaintext.</p>
+                  </div>
+                  <button className="btn btn-secondary" onClick={loadMyReports} disabled={reportsLoading}>
+                    {reportsLoading ? 'Refreshing...' : 'Refresh'}
+                  </button>
                 </div>
 
-                <div className="divider" />
+                {reportsError && <div className="test-error" style={{ marginBottom: 12 }}>{reportsError}</div>}
 
-                <div className="theme-customizer">
-                  <h3>{t('appearance.customTheme', 'Custom Theme')}</h3>
-                  <p className="theme-customizer-desc">{t('appearance.customThemeDesc', 'Create your own palette and optionally add a background gradient.')}</p>
-
-                  <div className="form-grid">
-                    <div className="form-group">
-                      <label>{t('appearance.themeName', 'Name')}</label>
-                      <input
-                        type="text"
-                        className="input"
-                        value={customThemeDraft.name}
-                        onChange={(e) => setCustomThemeDraft(p => ({ ...p, name: e.target.value }))}
-                        placeholder={t('appearance.themeNamePlaceholder', 'My Theme')}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label>{t('appearance.mode', 'Mode')}</label>
-                      <select
-                        className="input"
-                        value={customThemeDraft.mode}
-                        onChange={(e) => setCustomThemeDraft(p => ({ ...p, mode: e.target.value }))}
-                      >
-                        <option value="dark">{t('appearance.dark', 'Dark')}</option>
-                        <option value="light">{t('appearance.light', 'Light')}</option>
-                      </select>
+                {!reportsLoading && (
+                  <div className="privacy-note" style={{ marginBottom: 16 }}>
+                    <div className="age-meta">
+                      <div><strong>Total:</strong> {myReports.length}</div>
+                      <div><strong>Open:</strong> {myReports.filter(r => r.status === 'open').length}</div>
+                      <div><strong>Resolved:</strong> {myReports.filter(r => r.status === 'resolved').length}</div>
+                      <div><strong>Dismissed:</strong> {myReports.filter(r => r.status === 'dismissed').length}</div>
                     </div>
                   </div>
+                )}
 
-                  <div className="form-grid">
-                    <div className="form-group">
-                      <label>{t('appearance.primary', 'Primary')}</label>
-                      <div className="color-input-row">
-                        <input type="color" className="color-picker" value={customThemeDraft.primary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, primary: e.target.value }))} />
-                        <input type="text" className="input" value={customThemeDraft.primary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, primary: e.target.value }))} />
-                      </div>
-                    </div>
-
-                    <div className="form-group">
-                      <label>{t('appearance.success', 'Success')}</label>
-                      <div className="color-input-row">
-                        <input type="color" className="color-picker" value={customThemeDraft.success} onChange={(e) => setCustomThemeDraft(p => ({ ...p, success: e.target.value }))} />
-                        <input type="text" className="input" value={customThemeDraft.success} onChange={(e) => setCustomThemeDraft(p => ({ ...p, success: e.target.value }))} />
-                      </div>
-                    </div>
-
-                    <div className="form-group">
-                      <label>{t('appearance.warning', 'Warning')}</label>
-                      <div className="color-input-row">
-                        <input type="color" className="color-picker" value={customThemeDraft.warning} onChange={(e) => setCustomThemeDraft(p => ({ ...p, warning: e.target.value }))} />
-                        <input type="text" className="input" value={customThemeDraft.warning} onChange={(e) => setCustomThemeDraft(p => ({ ...p, warning: e.target.value }))} />
-                      </div>
-                    </div>
-
-                    <div className="form-group">
-                      <label>{t('appearance.danger', 'Danger')}</label>
-                      <div className="color-input-row">
-                        <input type="color" className="color-picker" value={customThemeDraft.danger} onChange={(e) => setCustomThemeDraft(p => ({ ...p, danger: e.target.value }))} />
-                        <input type="text" className="input" value={customThemeDraft.danger} onChange={(e) => setCustomThemeDraft(p => ({ ...p, danger: e.target.value }))} />
-                      </div>
-                    </div>
-
-                    <div className="form-group">
-                      <label>{t('appearance.backgroundPrimary', 'Background (Primary)')}</label>
-                      <div className="color-input-row">
-                        <input type="color" className="color-picker" value={customThemeDraft.bgPrimary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, bgPrimary: e.target.value }))} />
-                        <input type="text" className="input" value={customThemeDraft.bgPrimary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, bgPrimary: e.target.value }))} />
-                      </div>
-                    </div>
-
-                    <div className="form-group">
-                      <label>{t('appearance.backgroundSecondary', 'Background (Secondary)')}</label>
-                      <div className="color-input-row">
-                        <input type="color" className="color-picker" value={customThemeDraft.bgSecondary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, bgSecondary: e.target.value }))} />
-                        <input type="text" className="input" value={customThemeDraft.bgSecondary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, bgSecondary: e.target.value }))} />
-                      </div>
-                    </div>
-
-                    <div className="form-group">
-                      <label>{t('appearance.backgroundTertiary', 'Background (Tertiary)')}</label>
-                      <div className="color-input-row">
-                        <input type="color" className="color-picker" value={customThemeDraft.bgTertiary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, bgTertiary: e.target.value }))} />
-                        <input type="text" className="input" value={customThemeDraft.bgTertiary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, bgTertiary: e.target.value }))} />
-                      </div>
-                    </div>
-
-                    <div className="form-group">
-                      <label>{t('appearance.backgroundQuaternary', 'Background (Quaternary)')}</label>
-                      <div className="color-input-row">
-                        <input type="color" className="color-picker" value={customThemeDraft.bgQuaternary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, bgQuaternary: e.target.value }))} />
-                        <input type="text" className="input" value={customThemeDraft.bgQuaternary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, bgQuaternary: e.target.value }))} />
-                      </div>
-                    </div>
-
-                    <div className="form-group">
-                      <label>{t('appearance.textPrimary', 'Text (Primary)')}</label>
-                      <div className="color-input-row">
-                        <input type="color" className="color-picker" value={customThemeDraft.textPrimary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, textPrimary: e.target.value }))} />
-                        <input type="text" className="input" value={customThemeDraft.textPrimary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, textPrimary: e.target.value }))} />
-                      </div>
-                    </div>
-
-                    <div className="form-group">
-                      <label>{t('appearance.textSecondary', 'Text (Secondary)')}</label>
-                      <div className="color-input-row">
-                        <input type="color" className="color-picker" value={customThemeDraft.textSecondary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, textSecondary: e.target.value }))} />
-                        <input type="text" className="input" value={customThemeDraft.textSecondary} onChange={(e) => setCustomThemeDraft(p => ({ ...p, textSecondary: e.target.value }))} />
-                      </div>
-                    </div>
-
-                    <div className="form-group">
-                      <label>{t('appearance.textMuted', 'Text (Muted)')}</label>
-                      <div className="color-input-row">
-                        <input type="color" className="color-picker" value={customThemeDraft.textMuted} onChange={(e) => setCustomThemeDraft(p => ({ ...p, textMuted: e.target.value }))} />
-                        <input type="text" className="input" value={customThemeDraft.textMuted} onChange={(e) => setCustomThemeDraft(p => ({ ...p, textMuted: e.target.value }))} />
-                      </div>
-                    </div>
-
-                    <div className="form-group">
-                      <label>{t('appearance.border', 'Border')}</label>
-                      <div className="color-input-row">
-                        <input type="color" className="color-picker" value={customThemeDraft.border} onChange={(e) => setCustomThemeDraft(p => ({ ...p, border: e.target.value }))} />
-                        <input type="text" className="input" value={customThemeDraft.border} onChange={(e) => setCustomThemeDraft(p => ({ ...p, border: e.target.value }))} />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="custom-theme-gradient">
-                    <label className="custom-theme-gradient-toggle">
-                      <input
-                        type="checkbox"
-                        checked={customThemeDraft.gradientEnabled}
-                        onChange={(e) => setCustomThemeDraft(p => ({ ...p, gradientEnabled: e.target.checked }))}
-                      />
-                      {t('appearance.enableGradient')}
-                    </label>
-
-                    {customThemeDraft.gradientEnabled && (
-                      <div className="form-grid">
-                        <div className="form-group">
-                          <label>{t('appearance.gradientAngle', 'Gradient Angle')}</label>
-                          <input
-                            type="number"
-                            className="input"
-                            value={customThemeDraft.gradientAngle}
-                            onChange={(e) => setCustomThemeDraft(p => ({ ...p, gradientAngle: e.target.value }))}
-                          />
+                {reportsLoading ? (
+                  <div className="privacy-note">Loading report history...</div>
+                ) : myReports.length === 0 ? (
+                  <div className="privacy-note">No reports submitted yet.</div>
+                ) : (
+                  <div className="settings-report-list">
+                    {myReports.map((report) => (
+                      <div key={report.id} className="settings-report-item">
+                        <div className="settings-report-line">
+                          <strong>{report.reportType || 'user_report'}</strong>
+                          <span className={`settings-report-status status-${report.status || 'open'}`}>{report.status || 'open'}</span>
                         </div>
-
-                        <div className="form-group">
-                          <label>{t('appearance.gradientA', 'Gradient A')}</label>
-                          <div className="color-input-row">
-                            <input type="color" className="color-picker" value={customThemeDraft.gradientA} onChange={(e) => setCustomThemeDraft(p => ({ ...p, gradientA: e.target.value }))} />
-                            <input type="text" className="input" value={customThemeDraft.gradientA} onChange={(e) => setCustomThemeDraft(p => ({ ...p, gradientA: e.target.value }))} />
+                        <div className="settings-report-line mono">id: {report.id}</div>
+                        <div className="settings-report-line">
+                          context: {report.contextType || 'unknown'} | server: {report.clientMeta?.serverId || 'n/a'} | message: {report.clientMeta?.messageId || 'n/a'}
+                        </div>
+                        <div className="settings-report-line">
+                          reason: {report.clientMeta?.reason || 'n/a'}
+                        </div>
+                        <div className="settings-report-line">
+                          submitted: {report.createdAt ? new Date(report.createdAt).toLocaleString() : 'unknown'}
+                        </div>
+                        {report.resolvedAt && (
+                          <div className="settings-report-line">
+                            updated: {new Date(report.resolvedAt).toLocaleString()}
                           </div>
-                        </div>
-
-                        <div className="form-group">
-                          <label>{t('appearance.gradientB', 'Gradient B')}</label>
-                          <div className="color-input-row">
-                            <input type="color" className="color-picker" value={customThemeDraft.gradientB} onChange={(e) => setCustomThemeDraft(p => ({ ...p, gradientB: e.target.value }))} />
-                            <input type="text" className="input" value={customThemeDraft.gradientB} onChange={(e) => setCustomThemeDraft(p => ({ ...p, gradientB: e.target.value }))} />
-                          </div>
-                        </div>
+                        )}
                       </div>
-                    )}
+                    ))}
                   </div>
-
-                  {customThemeError && <div className="test-error" style={{ marginTop: 8 }}>{customThemeError}</div>}
-
-                  <div className="custom-theme-actions">
-                    <button className="btn btn-primary" type="button" onClick={handleCreateCustomTheme}>
-                      {t('appearance.saveCustomTheme')}
-                    </button>
-                    <button
-                      className="btn btn-secondary"
-                      type="button"
-                      onClick={() => {
-                        if (!customThemes.length) return
-                        const last = customThemes[customThemes.length - 1]
-                        if (last?.id) setTheme(last.id)
-                      }}
-                      disabled={!customThemes.length}
-                    >
-                      {t('appearance.applyLatestCustom')}
-                    </button>
-                  </div>
-                </div>
+                )}
               </div>
             )}
 
@@ -1457,6 +2032,16 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
               </div>
             )}
 
+            {activeTab === 'apps' && (
+              <div className="settings-section">
+                <h2>Activity Apps</h2>
+                <p className="settings-description">
+                  Create and manage custom activities that can be launched in voice channels.
+                </p>
+                <ActivityAppsPanel />
+              </div>
+            )}
+
             {activeTab === 'serverconfig' && (
               <div className="settings-section">
                 <h2>{t('settings.serverconfig')}</h2>
@@ -1467,8 +2052,87 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                   className="btn btn-primary" 
                   onClick={() => setShowAdminConfig(true)}
                 >
-                  <Settings size={16} /> {t('settings.openServerConfig')}
+                  <Cog6ToothIcon size={16} /> {t('settings.openServerConfig')}
                 </button>
+              </div>
+            )}
+
+            {activeTab === 'customization' && (
+              <div className="settings-section">
+                <h2>Customization</h2>
+                <p style={{ color: 'var(--volt-text-secondary)', marginBottom: '24px' }}>
+                  Personalize your VoltChat experience with advanced customization options.
+                </p>
+
+                <div className="customization-list">
+                  <button className="customization-item" onClick={() => setShowThemeCustomizer(true)}>
+                    <div className="customization-item-icon">
+                      <Palette size={24} />
+                    </div>
+                    <div className="customization-item-content">
+                      <h3>Theme Studio</h3>
+                      <p>Create and manage custom themes with full control over colors, fonts, and effects.</p>
+                    </div>
+                    <div className="customization-item-arrow">›</div>
+                  </button>
+
+                  <button className="customization-item" onClick={() => setShowFontModal(true)}>
+                    <div className="customization-item-icon">
+                      <Type size={24} />
+                    </div>
+                    <div className="customization-item-content">
+                      <h3>Typography</h3>
+                      <p>Choose from 20+ fonts to customize your reading experience.</p>
+                    </div>
+                    <div className="customization-item-arrow">›</div>
+                  </button>
+
+                  <button className="customization-item" onClick={() => setShowAnimationModal(true)}>
+                    <div className="customization-item-icon">
+                      <SparklesIcon size={24} />
+                    </div>
+                    <div className="customization-item-content">
+                      <h3>Animations</h3>
+                      <p>Customize modal animations and transition effects.</p>
+                    </div>
+                    <div className="customization-item-arrow">›</div>
+                  </button>
+
+                  <button className="customization-item" onClick={() => setShowProfileCustomModal(true)}>
+                    <div className="customization-item-icon">
+                      <Sliders size={24} />
+                    </div>
+                    <div className="customization-item-content">
+                      <h3>Profile Customization</h3>
+                      <p>Customize your profile appearance, banner effects, and layout.</p>
+                    </div>
+                    <div className="customization-item-arrow">›</div>
+                  </button>
+                </div>
+
+                <div className="customization-reset">
+                  <button 
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      if (confirm('Reset all customization settings to default?')) {
+                        const defaultSettings = {
+                          font: 'default',
+                          entranceAnimation: 'fade',
+                          exitAnimation: 'fade-out',
+                          animationSpeed: 'normal',
+                          profileLayout: 'standard',
+                          bannerEffect: 'none',
+                          badgeStyle: 'default',
+                        };
+                        Object.entries(defaultSettings).forEach(([key, value]) => {
+                          handleSelect(key, value);
+                        });
+                      }
+                    }}
+                  >
+                    Reset Customizations
+                  </button>
+                </div>
               </div>
             )}
 
@@ -1476,9 +2140,11 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
               <div className="settings-section">
                 <h2>{t('about.title')}</h2>
                 <div className="about-info">
-                  <div className="about-logo">⚡</div>
+                  <div className="about-logo">
+                    <img src="/favicon.svg" alt="VoltChat logo" className="about-logo-image" />
+                  </div>
                   <h3>VoltChat</h3>
-                  <p>{t('about.version')} 1.0.0</p>
+                  <p>{t('about.version')} 1.8.2</p>
                   <p className="about-description">
                     {t('about.description')}
                   </p>
@@ -1490,6 +2156,9 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
                       <li>Socket.IO</li>
                       <li>OAuth 2.0 with PKCE</li>
                       <li>WebRTC for Voice/Video</li>
+                      <li>Enhanced Profile System</li>
+                      <li>Advanced Theme Customization</li>
+                      <li>Modal Animation System</li>
                     </ul>
                   </div>
                 </div>
@@ -1513,6 +2182,130 @@ const SettingsModal = ({ onClose, initialTab = 'account' }) => {
 
     {showAdminConfig && (
       <AdminConfigModal onClose={() => setShowAdminConfig(false)} standalone />
+    )}
+
+    {showThemeCustomizer && (
+      <div className="modal-overlay settings-overlay" onClick={() => setShowThemeCustomizer(false)}>
+        <div onClick={e => e.stopPropagation()}>
+          <ThemeCustomizer 
+            onClose={() => setShowThemeCustomizer(false)}
+            onSave={(theme) => {
+              console.log('Theme saved:', theme);
+            }}
+          />
+        </div>
+      </div>
+    )}
+
+    {showFontModal && (
+      <div className="modal-overlay settings-overlay" onClick={() => setShowFontModal(false)}>
+        <div className="font-modal-content" onClick={e => e.stopPropagation()}>
+          <div className="simple-modal-header">
+            <h3><Type size={20} /> Typography</h3>
+            <button className="modal-close-btn" onClick={() => setShowFontModal(false)}>
+              <X size={20} />
+            </button>
+          </div>
+          <div className="simple-modal-body">
+            <p className="modal-description">Choose a font for your VoltChat interface.</p>
+            <FontSelector
+              selected={settings.font || 'default'}
+              onSelect={(font) => {
+                handleSelect('font', font);
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showAnimationModal && (
+      <div className="modal-overlay settings-overlay" onClick={() => setShowAnimationModal(false)}>
+        <div className="animation-modal-content" onClick={e => e.stopPropagation()}>
+          <div className="simple-modal-header">
+            <h3><SparklesIcon size={20} /> Animations</h3>
+            <button className="modal-close-btn" onClick={() => setShowAnimationModal(false)}>
+              <X size={20} />
+            </button>
+          </div>
+          <div className="simple-modal-body">
+            <p className="modal-description">Customize modal animations and transition effects.</p>
+            <AnimationSettings
+              settings={{
+                entranceAnimation: settings.entranceAnimation || 'fade',
+                exitAnimation: settings.exitAnimation || 'fade-out',
+                animationSpeed: settings.animationSpeed || 'normal',
+                smoothTransitions: settings.smoothTransitions !== false,
+                reducedMotion: settings.reducedMotion || false,
+              }}
+              onChange={(newSettings) => {
+                Object.entries(newSettings).forEach(([key, value]) => {
+                  handleSelect(key, value);
+                });
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showProfileCustomModal && (
+      <div className="modal-overlay settings-overlay" onClick={() => setShowProfileCustomModal(false)}>
+        <div className="profile-custom-modal-content" onClick={e => e.stopPropagation()}>
+          <div className="simple-modal-header">
+            <h3><Sliders size={20} /> Profile Customization</h3>
+            <button className="modal-close-btn" onClick={() => setShowProfileCustomModal(false)}>
+              <X size={20} />
+            </button>
+          </div>
+          <div className="simple-modal-body">
+            <p className="modal-description">Customize your profile appearance.</p>
+            <div className="profile-custom-options">
+              <div className="form-group">
+                <label>Profile Layout</label>
+                <select 
+                  className="input"
+                  value={settings.profileLayout || 'standard'}
+                  onChange={(e) => handleSelect('profileLayout', e.target.value)}
+                >
+                  <option value="standard">Standard</option>
+                  <option value="compact">Compact</option>
+                  <option value="expanded">Expanded</option>
+                  <option value="card">Card</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Banner Effect</label>
+                <select 
+                  className="input"
+                  value={settings.bannerEffect || 'none'}
+                  onChange={(e) => handleSelect('bannerEffect', e.target.value)}
+                >
+                  <option value="none">None</option>
+                  <option value="gradient-shift">Gradient Shift</option>
+                  <option value="pulse">Pulse</option>
+                  <option value="wave">Wave</option>
+                  <option value="aurora">Aurora</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Badge Style</label>
+                <select 
+                  className="input"
+                  value={settings.badgeStyle || 'default'}
+                  onChange={(e) => handleSelect('badgeStyle', e.target.value)}
+                >
+                  <option value="default">Default</option>
+                  <option value="glow">Glow</option>
+                  <option value="bordered">Bordered</option>
+                  <option value="minimal">Minimal</option>
+                  <option value="3d">3D</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     )}
     </>
   )

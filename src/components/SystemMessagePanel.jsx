@@ -8,11 +8,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react'
-import {
-  Bell, RefreshCw, Shield, ShieldAlert, Search, SearchX,
-  Megaphone, Info, CheckCircle, AlertTriangle, XCircle,
-  Trash2, CheckCheck, ExternalLink, ChevronDown, ChevronUp, X
-} from 'lucide-react'
+import { BellIcon, ArrowPathIcon, ShieldCheckIcon, ShieldExclamationIcon, MagnifyingGlassIcon, MegaphoneIcon, InformationCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, XCircleIcon, TrashIcon, CheckIcon, ArrowTopRightOnSquareIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import { apiService } from '../services/apiService'
 import { useTranslation } from '../hooks/useTranslation'
 import MarkdownMessage from './MarkdownMessage'
@@ -23,25 +19,25 @@ import '../assets/styles/SystemMessagePanel.css'
 // ---------------------------------------------------------------------------
 
 const CATEGORY_META = {
-  update:       { key: 'system.categoryUpdate',       fallback: 'Update',       icon: RefreshCw,    colour: '#818cf8' },
-  account:      { key: 'system.categoryAccount',      fallback: 'Account',      icon: Shield,       colour: '#f59e0b' },
-  discovery:    { key: 'system.categoryDiscovery',    fallback: 'Discovery',    icon: Search,       colour: '#34d399' },
-  announcement: { key: 'system.categoryAnnouncement', fallback: 'Announcement', icon: Megaphone,    colour: '#60a5fa' },
-  default:      { key: 'system.categorySystem',       fallback: 'System',       icon: Bell,         colour: '#94a3b8' }
+  update:       { key: 'system.categoryUpdate',       fallback: 'Update',       icon: ArrowPathIcon,          colour: 'var(--volt-primary)' },
+  account:      { key: 'system.categoryAccount',      fallback: 'Account',      icon: ShieldCheckIcon,        colour: 'var(--volt-warning)' },
+  discovery:    { key: 'system.categoryDiscovery',    fallback: 'Discovery',    icon: MagnifyingGlassIcon,    colour: 'var(--volt-success)' },
+  announcement: { key: 'system.categoryAnnouncement', fallback: 'Announcement', icon: MegaphoneIcon,          colour: 'var(--volt-primary-light)' },
+  default:      { key: 'system.categorySystem',       fallback: 'System',       icon: BellIcon,               colour: 'var(--volt-text-secondary)' }
 }
 
 const SEVERITY_ICON = {
-  success: CheckCircle,
-  warning: AlertTriangle,
-  error:   XCircle,
-  info:    Info
+  success: CheckCircleIcon,
+  warning: ExclamationTriangleIcon,
+  error:   XCircleIcon,
+  info:    InformationCircleIcon
 }
 
 const SEVERITY_COLOUR = {
-  success: '#22c55e',
-  warning: '#f59e0b',
-  error:   '#ef4444',
-  info:    '#818cf8'
+  success: 'var(--volt-success)',
+  warning: 'var(--volt-warning)',
+  error:   'var(--volt-danger)',
+  info:    'var(--volt-primary)'
 }
 
 function getCategoryMeta(category, t) {
@@ -50,8 +46,8 @@ function getCategoryMeta(category, t) {
 }
 
 function SeverityIcon({ severity, size = 16 }) {
-  const Icon = SEVERITY_ICON[severity] || Info
-  const color = SEVERITY_COLOUR[severity] || '#818cf8'
+  const Icon = SEVERITY_ICON[severity] || InformationCircleIcon
+  const color = SEVERITY_COLOUR[severity] || 'var(--volt-primary)'
   return <Icon size={size} color={color} />
 }
 
@@ -105,7 +101,7 @@ function SystemMessageCard({ message, onMarkRead, onDelete, t }) {
               title={t('system.markAsRead', 'Mark as read')}
               onClick={e => { e.stopPropagation(); onMarkRead(message.id) }}
             >
-              <CheckCheck size={14} />
+              <CheckIcon size={14} />
             </button>
           )}
           <button
@@ -113,9 +109,9 @@ function SystemMessageCard({ message, onMarkRead, onDelete, t }) {
             title={t('system.dismiss', 'Dismiss')}
             onClick={e => { e.stopPropagation(); onDelete(message.id) }}
           >
-            <Trash2 size={14} />
+            <TrashIcon size={14} />
           </button>
-          {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          {expanded ? <ChevronUpIcon size={14} /> : <ChevronDownIcon size={14} />}
         </div>
       </div>
 
@@ -130,7 +126,7 @@ function SystemMessageCard({ message, onMarkRead, onDelete, t }) {
               rel="noopener noreferrer"
               className="sysmsg-external-link"
             >
-              <ExternalLink size={13} />
+              <ArrowTopRightOnSquareIcon size={13} />
               {t('system.viewOnGithub', 'View on GitHub')}
             </a>
           )}
@@ -203,24 +199,24 @@ export default function SystemMessagePanel({ onClose }) {
       {/* Header */}
       <div className="sysmsg-panel-header">
         <div className="sysmsg-panel-title">
-          <Bell size={18} />
+          <BellIcon size={18} />
           <span>{t('system.systemInbox', 'System Inbox')}</span>
           {unread > 0 && <span className="sysmsg-badge">{unread}</span>}
         </div>
         <div className="sysmsg-panel-header-actions">
           {unread > 0 && (
             <button className="sysmsg-header-btn" onClick={handleMarkAllRead} title={t('system.markAllAsRead', 'Mark all as read')}>
-              <CheckCheck size={15} />
+              <CheckIcon size={15} />
             </button>
           )}
           {messages.length > 0 && (
             <button className="sysmsg-header-btn danger" onClick={handleClearAll} title={t('system.clearAll', 'Clear all')}>
-              <Trash2 size={15} />
+              <TrashIcon size={15} />
             </button>
           )}
           {onClose && (
             <button className="sysmsg-header-btn" onClick={onClose} title={t('common.close', 'Close')}>
-              <X size={15} />
+              <XMarkIcon size={15} />
             </button>
           )}
         </div>
@@ -253,7 +249,7 @@ export default function SystemMessagePanel({ onClose }) {
 
         {!loading && displayed.length === 0 && (
           <div className="sysmsg-empty">
-            <Bell size={36} opacity={0.25} />
+            <BellIcon size={36} opacity={0.25} />
             <p>{filter === 'unread' ? t('system.noUnreadMessages', 'No unread messages') : t('system.inboxEmpty', 'Your inbox is empty')}</p>
           </div>
         )}

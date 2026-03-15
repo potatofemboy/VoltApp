@@ -1,7 +1,35 @@
 const PUSH_NOTIFICATIONS_KEY = 'voltchat_push_subscription'
 
+const isDesktop = () => {
+  return typeof window !== 'undefined' && window.__IS_DESKTOP_APP__ === true
+}
+
 export const pushService = {
+  async ensurePermission() {
+    if (typeof window === 'undefined' || typeof window.Notification === 'undefined') {
+      return false
+    }
+
+    if (window.Notification.permission === 'granted') return true
+    if (window.Notification.permission === 'denied') return false
+
+    try {
+      const result = await window.Notification.requestPermission()
+      return result === 'granted'
+    } catch (err) {
+      console.error('[Push] Notification permission request failed:', err)
+      return false
+    }
+  },
+
   async register() {
+    // Service Workers don't work properly in Electron
+    // Use Electron's native notifications instead
+    if (isDesktop()) {
+      console.log('[Push] Desktop mode - using native Electron notifications')
+      return { isDesktop: true }
+    }
+
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
       console.warn('[Push] Service Worker or Push Manager not supported')
       return null
@@ -20,6 +48,13 @@ export const pushService = {
   },
 
   async subscribe(registration, vapidPublicKey) {
+    // Desktop uses native notifications
+    if (isDesktop() || (registration && registration.isDesktop)) {
+      console.log('[Push] Using native desktop notifications')
+      localStorage.setItem(PUSH_NOTIFICATIONS_KEY, JSON.stringify({ desktop: true, enabled: true }))
+      return { desktop: true }
+    }
+
     try {
       const subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
@@ -35,6 +70,13 @@ export const pushService = {
   },
 
   async unsubscribe() {
+    // Desktop uses native notifications
+    if (isDesktop()) {
+      console.log('[Push] Desktop mode - native notifications remain enabled')
+      localStorage.removeItem(PUSH_NOTIFICATIONS_KEY)
+      return
+    }
+
     try {
       const registration = await navigator.serviceWorker.ready
       const subscription = await registration.pushManager.getSubscription()
@@ -49,6 +91,15 @@ export const pushService = {
   },
 
   async getSubscription() {
+    // Desktop uses native notifications
+    if (isDesktop()) {
+      const stored = localStorage.getItem(PUSH_NOTIFICATIONS_KEY)
+      if (stored) {
+        return { desktop: true, enabled: true }
+      }
+      return null
+    }
+
     try {
       const registration = await navigator.serviceWorker.ready
       return await registration.pushManager.getSubscription()
@@ -59,7 +110,22 @@ export const pushService = {
   },
 
   isSupported() {
+    // Always supported in desktop mode via native notifications
+    if (isDesktop()) return true
     return 'serviceWorker' in navigator && 'PushManager' in window
+  },
+
+  // Show native desktop notification
+  async showNativeNotification(title, options = {}) {
+    if (isDesktop() && window.electron?.showNotification) {
+      return await window.electron.showNotification({
+        title,
+        body: options.body || '',
+        icon: options.icon,
+        deeplink: options.data?.url
+      })
+    }
+    return null
   },
 
   urlBase64ToUint8Array(base64String) {

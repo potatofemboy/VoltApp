@@ -1,10 +1,19 @@
 import React, { useRef, useEffect, useState, useCallback, forwardRef, useImperativeHandle } from 'react'
 import { useTranslation } from '../hooks/useTranslation'
 import { useAppStore } from '../store/useAppStore'
+import VoiceRecorder from './VoiceRecorder'
+import emojiNameMap from 'emoji-name-map'
 import '../assets/styles/ChatInput.css'
 
 const CUSTOM_EMOJI_TOKEN_RE = /:([a-zA-Z0-9_]{1,32}|[^|:\s]+\|[^|:\s]+\|[^|:\s]+\|[^:\s]+):/g
+const UNICODE_EMOJI_SHORTCODE_RE = /:([a-zA-Z0-9_+-]+):/g
 const CARET_MARKER = '\uE000'
+const escapeHtml = (value = '') => value
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;')
 
 const buildEmojiLookup = (customEmojis = [], globalEmojis = []) => {
   const byName = {}
@@ -43,35 +52,84 @@ const resolveEmojiToken = (tokenInner, lookup) => {
   }
 }
 
+const resolveUnicodeEmoji = (name) => {
+  const emoji = emojiNameMap.get(name)
+  if (emoji) {
+    return {
+      token: `:${name}:`,
+      emoji: emoji,
+      title: `:${name}:`
+    }
+  }
+  return null
+}
+
 const buildEditorNodes = (text, lookup) => {
   const nodes = []
   if (!text) return [document.createTextNode('')]
 
   let last = 0
   let match
-  const re = new RegExp(CUSTOM_EMOJI_TOKEN_RE.source, 'g')
-  while ((match = re.exec(text)) !== null) {
-    const tokenInner = match[1]
-    const emoji = resolveEmojiToken(tokenInner, lookup)
-    if (!emoji) continue
-
-    if (match.index > last) {
-      nodes.push(document.createTextNode(text.slice(last, match.index)))
+  
+  const customEmojiRe = new RegExp(CUSTOM_EMOJI_TOKEN_RE.source, 'g')
+  const unicodeEmojiRe = new RegExp(UNICODE_EMOJI_SHORTCODE_RE.source, 'g')
+  
+  const allMatches = []
+  
+  while ((match = customEmojiRe.exec(text)) !== null) {
+    allMatches.push({ ...match, type: 'custom' })
+  }
+  while ((match = unicodeEmojiRe.exec(text)) !== null) {
+    allMatches.push({ ...match, type: 'unicode' })
+  }
+  
+  allMatches.sort((a, b) => a.index - b.index)
+  
+  for (const m of allMatches) {
+    const tokenInner = m[1]
+    
+    if (m.type === 'custom') {
+      const emoji = resolveEmojiToken(tokenInner, lookup)
+      if (!emoji) continue
+      
+      if (m.index > last) {
+        nodes.push(document.createTextNode(text.slice(last, m.index)))
+      }
+      
+      const chip = document.createElement('span')
+      chip.className = 'chat-input-emoji-token'
+      chip.setAttribute('data-token', emoji.token)
+      chip.setAttribute('contenteditable', 'false')
+      chip.setAttribute('title', emoji.title)
+      const img = document.createElement('img')
+      img.src = emoji.url
+      img.alt = emoji.token
+      img.draggable = false
+      chip.appendChild(img)
+      nodes.push(chip)
+      
+      last = m.index + m[0].length
+    } else if (m.type === 'unicode') {
+      const emoji = resolveUnicodeEmoji(tokenInner)
+      if (!emoji) continue
+      
+      if (m.index > last) {
+        nodes.push(document.createTextNode(text.slice(last, m.index)))
+      }
+      
+      const chip = document.createElement('span')
+      chip.className = 'chat-input-emoji-token'
+      chip.setAttribute('data-token', emoji.token)
+      chip.setAttribute('contenteditable', 'false')
+      chip.setAttribute('title', emoji.title)
+      const span = document.createElement('span')
+      span.textContent = emoji.emoji
+      span.style.fontSize = '1.2em'
+      chip.appendChild(span)
+      nodes.push(chip)
+      
+      last = m.index + m[0].length
     }
-
-    const chip = document.createElement('span')
-    chip.className = 'chat-input-emoji-token'
-    chip.setAttribute('data-token', emoji.token)
-    chip.setAttribute('contenteditable', 'false')
-    chip.setAttribute('title', emoji.title)
-    const img = document.createElement('img')
-    img.src = emoji.url
-    img.alt = emoji.token
-    img.draggable = false
-    chip.appendChild(img)
-    nodes.push(chip)
-
-    last = match.index + match[0].length
   }
 
   if (last === 0) return [document.createTextNode(text)]
@@ -83,26 +141,32 @@ const buildEditorNodes = (text, lookup) => {
 const serializeNodeToText = (node) => {
   if (!node) return ''
   if (node.nodeType === Node.TEXT_NODE) return node.textContent || ''
-  if (node.nodeType !== Node.ELEMENT_NODE) return ''
-  if (node.hasAttribute('data-caret-marker')) return CARET_MARKER
-  if (node.classList.contains('chat-input-emoji-token')) return node.getAttribute('data-token') || ''
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    if (node.hasAttribute('data-caret-marker')) return CARET_MARKER
+    if (node.classList.contains('chat-input-emoji-token')) return node.getAttribute('data-token') || ''
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) return ''
   let out = ''
   node.childNodes.forEach((child) => { out += serializeNodeToText(child) })
   return out
 }
 
-const ChatInput = forwardRef(({ 
-  value, 
-  onChange, 
-  placeholder, 
-  onSubmit,
-  onKeyDown,
-  disabled,
-  onAttachClick,
-  onEmojiClick,
-  customEmojis = [],
-  className = ''
-}, ref) => {
+const ChatInput = forwardRef((props, ref) => {
+  const { 
+    value, 
+    onChange, 
+    placeholder, 
+    onSubmit,
+    onKeyDown,
+    onFocus,
+    disabled,
+    onAttachClick,
+    onEmojiClick,
+    onKlipyClick,
+    onVoiceMessageSent,
+    customEmojis = [],
+    className = ''
+  } = props
   const { t } = useTranslation()
   const globalEmojis = useAppStore(state => state.globalEmojis)
   const editorRef = useRef(null)
@@ -284,14 +348,18 @@ const ChatInput = forwardRef(({
       }
     }
 
-    // Handle Shift+Enter for newline - let the browser handle it naturally
-    // by NOT preventing default for shift+enter
+    // Call onKeyDown first so it can handle special cases like mention selection
+    // If onKeyDown doesn't prevent default or handle the event, then submit
+    if (onKeyDown) {
+      onKeyDown(e)
+      // If the event was handled (e.g., mention selected), don't submit
+      if (e.defaultPrevented) return
+    }
+
+    // Handle Enter for sending message - only if not handled by onKeyDown
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       if (onSubmit) onSubmit()
-    }
-    if (onKeyDown) {
-      onKeyDown(e)
     }
   }
 
@@ -317,6 +385,7 @@ const ChatInput = forwardRef(({
     const text = serializeNodeToText(fragment)
     e.preventDefault()
     e.clipboardData.setData('text/plain', text)
+    e.clipboardData.setData('text/html', escapeHtml(text))
     if (isCut) {
       range.deleteContents()
       syncFromDom()
@@ -389,7 +458,10 @@ const ChatInput = forwardRef(({
     selection.addRange(range)
   }, [])
 
-  const handleFocus = () => setIsFocused(true)
+  const handleFocus = (e) => {
+    setIsFocused(true)
+    if (onFocus) onFocus(e)
+  }
   const handleBlur = () => setIsFocused(false)
 
   const autoResize = () => {
@@ -500,29 +572,28 @@ const ChatInput = forwardRef(({
         />
       </div>
 
-      {contextMenu && (
-        <div 
-          className="custom-context-menu"
-          style={{ 
-            left: contextMenu.x, 
-            top: contextMenu.y 
-          }}
-        >
-          {contextMenu.items.map((item, index) => (
-            <button
-              key={index}
-              className={`context-menu-item ${item.disabled ? 'disabled' : ''}`}
-              onClick={item.disabled ? undefined : item.action}
-              disabled={item.disabled}
-            >
-              <span className="context-menu-icon">{item.icon}</span>
-              <span className="context-menu-label">{item.label}</span>
-            </button>
-          ))}
-        </div>
+      {onVoiceMessageSent && (
+        <VoiceRecorder 
+          onVoiceMessageSent={onVoiceMessageSent} 
+          disabled={disabled} 
+        />
       )}
 
       <div className="chat-input-actions">
+        <button 
+          type="button" 
+          className="chat-input-action-btn klipy-btn"
+          title={t('klipy.title', 'Search KLIPY')}
+          onClick={onKlipyClick}
+        >
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <path d="M9 9h6" />
+            <path d="M9 13h6" />
+            <path d="M9 17h4" />
+          </svg>
+        </button>
+        
         <button 
           type="button" 
           className="chat-input-action-btn"
