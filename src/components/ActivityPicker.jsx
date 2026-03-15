@@ -147,14 +147,20 @@ const ActivityPicker = ({ socket, contextType, contextId, participantsCount = 0,
   const handleLaunch = (activityId) => {
     if (!activityId || typeof activityId !== 'string') return
     setPendingAction({ type: 'launch', id: activityId })
+    const isBuiltin = activityId.startsWith('builtin:')
+    const activityDef = CLIENT_BUILTIN_BY_ID[activityId]
+    const catalogActivity = catalog.find(a => a.id === activityId)
+    const launchUrl = catalogActivity?.launchUrl || activityDef?.launchUrl || null
+    
     if (onLaunch) {
-      onLaunch(activityId)
+      onLaunch(activityId, launchUrl)
     } else if (socket && contextId) {
       socket.emit('activity:create-session', {
         contextType,
         contextId,
         activityId,
-        activityDefinition: CLIENT_BUILTIN_BY_ID[activityId] || null,
+        activityDefinition: activityDef || { id: activityId, launchUrl },
+        launchUrl,
         p2p: { enabled: true, preferred: true },
         sound: { enabled: true, volume: 0.8 }
       })

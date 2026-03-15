@@ -15,6 +15,7 @@ import VoiceFX from './VoiceFX'
 import ScreenSharePicker from './ScreenSharePicker'
 import ActivityPicker from './ActivityPicker'
 import ActivityStrip from './ActivityStrip'
+import ActivityIframe from './ActivityIframe'
 import StreamOverlayModal from './StreamOverlayModal'
 import { CLIENT_BUILTIN_BY_ID, CLIENT_BUILTIN_ACTIVITIES } from '../activities/builtin/definitions'
 import { loadVoiceOverlayState, saveVoiceOverlayState } from '../services/voiceOverlayService'
@@ -445,6 +446,8 @@ const VoiceChannel = ({ channel, joinKey, viewMode = 'full', onLeave, isMuted: e
   
   // Local state for focused builtin activity session
   const [focusedBuiltinSession, setFocusedBuiltinSession] = useState(null)
+  // Local state for focused external activity session
+  const [focusedExternalSession, setFocusedExternalSession] = useState(null)
   
   // Update focusedBuiltinSession when focusedActivityId changes
   useEffect(() => {
@@ -460,9 +463,21 @@ const VoiceChannel = ({ channel, joinKey, viewMode = 'full', onLeave, isMuted: e
           contextType: activity.contextType,
           contextId: activity.contextId
         })
+        setFocusedExternalSession(null)
+      } else if (activity && activity.activityId && !activity.activityId.startsWith('builtin:')) {
+        setFocusedBuiltinSession(null)
+        setFocusedExternalSession({
+          id: activity.sessionId,
+          sessionId: activity.sessionId,
+          activityId: activity.activityId,
+          activityName: activity.activityName || 'Activity',
+          launchUrl: activity.launchUrl || null,
+          contextType: activity.contextType,
+          contextId: activity.contextId
+        })
       } else {
         setFocusedBuiltinSession(null)
-        // If invalid activity was focused, clear it
+        setFocusedExternalSession(null)
         if (activity && !activity.activityId) {
           clearFocusedActivity()
           removeActivity(focusedActivityId)
@@ -470,6 +485,7 @@ const VoiceChannel = ({ channel, joinKey, viewMode = 'full', onLeave, isMuted: e
       }
     } else {
       setFocusedBuiltinSession(null)
+      setFocusedExternalSession(null)
     }
   }, [focusedActivityId, activeActivities])
   const [localStream, setLocalStream] = useState(null)
@@ -598,24 +614,28 @@ const VoiceChannel = ({ channel, joinKey, viewMode = 'full', onLeave, isMuted: e
       
       // Add all valid sessions to store
       channelSessions.forEach(session => {
+        if (!session.id || !session.activityId) return
         const participantCount = Math.max(Number(session.participantCount || 0), 1)
         const isPendingLaunch = pendingLaunchedActivityIdRef.current && pendingLaunchedActivityIdRef.current === session.activityId
+        const isBuiltin = String(session.activityId || '').startsWith('builtin:')
         if (!activeActivities.find(a => a.sessionId === session.id)) {
           addActivity({
             sessionId: session.id,
             activityId: session.activityId,
             activityName: session.activityName || 'Activity',
+            launchUrl: session.launchUrl || null,
             ownerId: session.ownerId || session.hostId || null,
             hostId: session.hostId || session.ownerId || null,
             contextType: session.contextType,
             contextId: session.contextId,
-            participantCount
+            participantCount,
+            isBuiltin
           })
         }
         if (isPendingLaunch) {
           pendingLaunchedActivityIdRef.current = null
           setFocusedActivity(session.id)
-          if (String(session.activityId || '').startsWith('builtin:')) {
+          if (isBuiltin) {
             setFocusedBuiltinSession({
               id: session.id,
               sessionId: session.id,
@@ -623,6 +643,19 @@ const VoiceChannel = ({ channel, joinKey, viewMode = 'full', onLeave, isMuted: e
               activityName: session.activityName || 'Activity',
               ownerId: session.ownerId || session.hostId || null,
               hostId: session.hostId || session.ownerId || null,
+              contextType: session.contextType,
+              contextId: session.contextId,
+              participantCount
+            })
+            setFocusedExternalSession(null)
+          } else {
+            setFocusedBuiltinSession(null)
+            setFocusedExternalSession({
+              id: session.id,
+              sessionId: session.id,
+              activityId: session.activityId,
+              activityName: session.activityName || 'Activity',
+              launchUrl: session.launchUrl || null,
               contextType: session.contextType,
               contextId: session.contextId,
               participantCount
@@ -635,42 +668,57 @@ const VoiceChannel = ({ channel, joinKey, viewMode = 'full', onLeave, isMuted: e
     const onSessionCreated = (payload = {}) => {
       const session = payload.session || payload
       if (session.contextType !== 'voice' || session.contextId !== channel.id) return
-      // Validate session has required fields and has participants
-      if (!session.id || !session.activityId || !session.activityId.startsWith('builtin:')) {
+      if (!session.id || !session.activityId) {
         console.warn('[VoiceChannel] Ignoring invalid session:', session)
         return
       }
       const participantCount = Math.max(Number(session.participantCount || 0), 1)
       const isPendingLaunch = pendingLaunchedActivityIdRef.current && pendingLaunchedActivityIdRef.current === session.activityId
-      // Check if already exists before adding (extra safety)
+      const isBuiltin = String(session.activityId || '').startsWith('builtin:')
       if (!activeActivities.find(a => a.sessionId === session.id)) {
         addActivity({
           sessionId: session.id,
           activityId: session.activityId,
           activityName: session.activityName || 'Activity',
+          launchUrl: session.launchUrl || null,
           ownerId: session.ownerId || session.hostId || null,
           hostId: session.hostId || session.ownerId || null,
           contextType: session.contextType,
           contextId: session.contextId,
-          participantCount
+          participantCount,
+          isBuiltin
         })
-        // Play sound when new activity created
         soundService?.activityStart?.() || soundService?.success?.()
       }
       if (isPendingLaunch) {
         pendingLaunchedActivityIdRef.current = null
         setFocusedActivity(session.id)
-        setFocusedBuiltinSession({
-          id: session.id,
-          sessionId: session.id,
-          activityId: session.activityId,
-          activityName: session.activityName || 'Activity',
-          ownerId: session.ownerId || session.hostId || null,
-          hostId: session.hostId || session.ownerId || null,
-          contextType: session.contextType,
-          contextId: session.contextId,
-          participantCount
-        })
+        if (isBuiltin) {
+          setFocusedBuiltinSession({
+            id: session.id,
+            sessionId: session.id,
+            activityId: session.activityId,
+            activityName: session.activityName || 'Activity',
+            ownerId: session.ownerId || session.hostId || null,
+            hostId: session.hostId || session.ownerId || null,
+            contextType: session.contextType,
+            contextId: session.contextId,
+            participantCount
+          })
+          setFocusedExternalSession(null)
+        } else {
+          setFocusedBuiltinSession(null)
+          setFocusedExternalSession({
+            id: session.id,
+            sessionId: session.id,
+            activityId: session.activityId,
+            activityName: session.activityName || 'Activity',
+            launchUrl: session.launchUrl || null,
+            contextType: session.contextType,
+            contextId: session.contextId,
+            participantCount
+          })
+        }
       }
     }
 
@@ -3918,7 +3966,7 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       const processedParticipants = participantsData.map(p => {
         // Handle both string IDs and user objects
         if (typeof p === 'string') {
-          return { id: p, username: 'Unknown User', avatar: null }
+          return { id: p, username: 'Unknown User', avatar: null, bot: false }
         }
         // Validate the user object has required fields
         if (!p || typeof p !== 'object') {
@@ -3929,7 +3977,16 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
           console.warn('[VoiceChannel] Skipping participant without id:', p)
           return null
         }
-        return { id: p.id, username: p.username || 'Unknown User', avatar: p.avatar || null }
+        return { 
+          id: p.id, 
+          username: p.username || 'Unknown User', 
+          avatar: p.avatar || null,
+          bot: p.bot || false,
+          hasVideo: p.hasVideo || false,
+          isScreenSharing: p.isScreenSharing || false,
+          muted: p.muted || false,
+          deafened: p.deafened || false
+        }
       }).filter(Boolean)
       
       const peerIds = processedParticipants
@@ -4016,8 +4073,17 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       try {
         // Normalize: handle both string IDs and user objects
         const normalizedUser = typeof userInfo === 'string' 
-          ? { id: userInfo, username: 'Unknown User', avatar: null }
-          : (userInfo?.id ? userInfo : null)
+          ? { id: userInfo, username: 'Unknown User', avatar: null, bot: false }
+          : (userInfo?.id ? { 
+              id: userInfo.id, 
+              username: userInfo.username || 'Unknown User', 
+              avatar: userInfo.avatar || null,
+              bot: userInfo.bot || false,
+              hasVideo: userInfo.hasVideo || false,
+              isScreenSharing: userInfo.isScreenSharing || false,
+              muted: userInfo.muted || false,
+              deafened: userInfo.deafened || false
+            } : null)
         
         if (!normalizedUser?.id) {
           console.warn('[VoiceChannel] Invalid userInfo in voice:user-joined:', userInfo)
@@ -4087,8 +4153,15 @@ const SYNC_CORRECTION_STEP = 50 // ms - amount to adjust per correction
       try {
         // Normalize: handle both string IDs and user objects
         const normalizedUser = typeof userInfo === 'string' 
-          ? { id: userInfo, username: 'Unknown User' }
-          : (userInfo?.id ? userInfo : null)
+          ? { id: userInfo, username: 'Unknown User', bot: false }
+          : (userInfo?.id ? { 
+              id: userInfo.id, 
+              username: userInfo.username || 'Unknown User',
+              avatar: userInfo.avatar || null,
+              bot: userInfo.bot || false,
+              hasVideo: userInfo.hasVideo || false,
+              isScreenSharing: userInfo.isScreenSharing || false
+            } : null)
         
         if (!normalizedUser?.id) {
           console.warn('[VoiceChannel] Invalid userInfo in voice:user-reconnected:', userInfo)
@@ -5575,14 +5648,17 @@ socket.on('voice:force-reconnect', (data) => {
     }
   }
 
-  const handleActivityLaunch = (activityId) => {
+  const handleActivityLaunch = (activityId, launchUrl = null) => {
     if (!socket || !channel?.id) return
     pendingLaunchedActivityIdRef.current = activityId
+    const isBuiltin = String(activityId).startsWith('builtin:')
+    const activityDef = CLIENT_BUILTIN_BY_ID[activityId]
     socket.emit('activity:create-session', {
       contextType: 'voice',
       contextId: channel.id,
       activityId,
-      activityDefinition: CLIENT_BUILTIN_BY_ID[activityId] || null,
+      activityDefinition: activityDef || { id: activityId, launchUrl },
+      launchUrl: launchUrl || activityDef?.launchUrl || null,
       p2p: { enabled: true, preferred: true },
       sound: { enabled: true, volume: 0.8 }
     })
@@ -6428,7 +6504,7 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
       )}
 
       <div className={`voice-main-content ${tempChat.isVisible ? 'has-chat' : ''}`}>
-        <div className={`voice-main-area ${hasAnyVideo || focusedBuiltinSession ? 'has-video' : ''} ${focusedBuiltinSession ? 'has-focused-activity' : ''}`}>
+        <div className={`voice-main-area ${hasAnyVideo || focusedBuiltinSession || focusedExternalSession ? 'has-video' : ''} ${focusedBuiltinSession || focusedExternalSession ? 'has-focused-activity' : ''}`}>
           {/* When activity is focused, show ONLY the activity (full screen) */}
           {focusedBuiltinSession ? (
           <div 
@@ -6467,7 +6543,17 @@ if (hasJoinedRef.current && !hasLeftRef.current) {
               }}
             />
           </div>
-        ) : hasAnyVideo && mainVideoStream && mainVideoParticipant ? (
+          ) : focusedExternalSession ? (
+          <ActivityIframe
+            session={focusedExternalSession}
+            activity={focusedExternalSession}
+            onClose={() => {
+              clearFocusedActivity()
+              setFocusedExternalSession(null)
+              socket?.emit('activity:leave-session', { sessionId: focusedExternalSession.sessionId })
+            }}
+          />
+          ) : hasAnyVideo && mainVideoStream && mainVideoParticipant ? (
           <div
             className="voice-main-video"
             onClick={() => setPinnedParticipant(pinnedParticipant ? null : mainVideoParticipant)}

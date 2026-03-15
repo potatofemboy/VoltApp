@@ -65,7 +65,7 @@ const VoiceChannelTempChat = ({
   }
 
   return (
-    <div className="voice-temp-chat">
+    <div className={`voice-temp-chat ${isVisible ? 'visible' : ''}`}>
       <div className="voice-temp-chat-header">
         <span className="voice-temp-chat-title">Voice Chat</span>
         <div className="voice-temp-chat-actions">

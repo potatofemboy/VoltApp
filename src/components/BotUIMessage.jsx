@@ -154,9 +154,8 @@ const BotCanvas = ({ canvas, onPixelClick, disabled }) => {
         }
         const decompressed = gunzip(bytes)
         if (decompressed) return new Uint8ClampedArray(decompressed)
-        return bytes
       }
-      return bytes
+      return new Uint8ClampedArray(bytes)
     } catch (err) {
       console.error('[BotUI] Failed to decompress bulk pixels:', err)
       return null
@@ -185,7 +184,8 @@ const BotCanvas = ({ canvas, onPixelClick, disabled }) => {
     ctx.fillRect(0, 0, canvas.width, canvas.height)
 
     if (bulkPixelData && bulkPixelData.length > 0) {
-      const imageData = new ImageData(bulkPixelData, canvas.width, canvas.height)
+      const imageData = ctx.createImageData(canvas.width, canvas.height)
+      imageData.data.set(bulkPixelData)
       ctx.putImageData(imageData, 0, 0)
     } else {
       for (const pixel of pixels) {
