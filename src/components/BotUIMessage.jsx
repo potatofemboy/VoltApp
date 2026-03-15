@@ -184,8 +184,8 @@ const BotCanvas = ({ canvas, onPixelClick, disabled }) => {
     ctx.fillRect(0, 0, canvas.width, canvas.height)
 
     if (bulkPixelData && bulkPixelData.length > 0) {
-      const imageData = ctx.createImageData(canvas.width, canvas.height)
-      imageData.data.set(bulkPixelData.subarray(0, canvas.width * canvas.height * 4))
+      const rgbaArray = new Uint8ClampedArray(bulkPixelData.buffer, bulkPixelData.byteOffset, canvas.width * canvas.height * 4)
+      const imageData = new ImageData(rgbaArray, canvas.width, canvas.height)
       ctx.putImageData(imageData, 0, 0)
     } else {
       for (const pixel of pixels) {
